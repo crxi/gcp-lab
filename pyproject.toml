@@ -1,0 +1,17 @@
+[project]
+name = "glab"
+version = "0.1.0"
+description = "a small Compute Engine control tool"
+requires-python = ">=3.9"
+dependencies = [
+    "google-cloud-compute>=1.19",
+    "google-auth>=2.30",
+    "requests>=2.31",
+]
+
+[project.scripts]
+glab = "glab:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
