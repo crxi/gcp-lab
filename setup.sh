@@ -23,7 +23,7 @@ fi
 
 if [ "$CHECK" = 0 ]; then
   mkdir -p "$BIN"
-  printf '#!/usr/bin/env bash\nexec python3 %s/glab.py "$@"\n' "$HERE" > "$BIN/glab"
+  printf '#!/usr/bin/env bash\nexec python3 %q "$@"\n' "$HERE/glab.py" > "$BIN/glab"
   chmod +x "$BIN/glab" "$HERE/glab.py"
   ok "installed $BIN/glab"
 fi
