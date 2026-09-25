@@ -416,5 +416,23 @@ class PingExperiment(unittest.TestCase):
         drop.assert_not_called()
 
 
+
+class Wait(unittest.TestCase):
+    """operations.wait can return before the operation is done."""
+
+    def test_waits_again_until_done(self):
+        running = mock.Mock(status=glab.compute_v1.Operation.Status.RUNNING)
+        done = mock.Mock(status=glab.compute_v1.Operation.Status.DONE)
+        done.error.errors = []
+        client = mock.Mock()
+        client.wait.side_effect = [running, running, done]
+        with mock.patch.object(glab, "current_project", return_value="p"), \
+                mock.patch.object(glab.compute_v1, "ZoneOperationsClient",
+                                  return_value=client):
+            result = glab.wait(mock.Mock(name="op"), zone="asia-southeast1-b")
+        self.assertIs(result, done)
+        self.assertEqual(client.wait.call_count, 3)
+
+
 if __name__ == "__main__":
     unittest.main()

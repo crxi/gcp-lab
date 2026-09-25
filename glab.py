@@ -12,8 +12,8 @@ carries the label `lab=1`, and it only touches resources carrying that label.
     glab run box 'nvidia-smi'
     glab destroy box
 
-The read-only commands have run against a real project; the ones that create
-resources have not. See the "Unverified" section of AGENTS.md.
+Most commands have run against a real project; `shell`, spot, public IP and
+GPU launches have not. See the "Unverified" section of AGENTS.md.
 """
 
 import argparse
@@ -170,12 +170,18 @@ def wait(operation, zone=None):
     if operation is None:
         return
     project = current_project()
-    if zone:
-        client = compute_v1.ZoneOperationsClient()
-        result = client.wait(project=project, zone=zone, operation=operation.name)
-    else:
-        client = compute_v1.GlobalOperationsClient()
-        result = client.wait(project=project, operation=operation.name)
+    # operations.wait returns after about two minutes whether or not the
+    # operation is done, so call it again until it is. A stop can take longer.
+    while True:
+        if zone:
+            client = compute_v1.ZoneOperationsClient()
+            result = client.wait(project=project, zone=zone,
+                                 operation=operation.name)
+        else:
+            client = compute_v1.GlobalOperationsClient()
+            result = client.wait(project=project, operation=operation.name)
+        if result.status == compute_v1.Operation.Status.DONE:
+            break
     if result.error and result.error.errors:
         die("; ".join(e.message for e in result.error.errors))
     return result
@@ -191,8 +197,11 @@ def describe(zone=None):
     """Every lab instance in one zone, as plain dicts."""
     zone = zone or current_zone()
     out = []
-    for i in instances_client().list(project=current_project(), zone=zone,
-                                     filter=f"labels.{LABEL_KEY}=1"):
+    # The flattened keyword form takes project and zone only; a filter has to
+    # go in the request object.
+    request = compute_v1.ListInstancesRequest(
+        project=current_project(), zone=zone, filter=f"labels.{LABEL_KEY}=1")
+    for i in instances_client().list(request=request):
         nic = i.network_interfaces[0] if i.network_interfaces else None
         access = nic.access_configs[0] if (nic and nic.access_configs) else None
         out.append({
@@ -694,7 +703,7 @@ def cmd_start(args):
     i = find(args.name)
     wait(instances_client().start(project=current_project(), zone=i["zone"],
                                   instance=i["name"]), i["zone"])
-    print(f"{args.name} starting")
+    print(f"{args.name} running. ssh is ready about 30 seconds after this.")
 
 
 def cmd_stop(args):

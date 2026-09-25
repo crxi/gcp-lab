@@ -25,19 +25,27 @@ API call does. Don't add abstraction that hides the calls.
 ## Unverified
 
 Confirmed against a real project on 2026-09-25: `whoami`, `project`, `zone`,
-`zones`, `types` (on-demand and spot) and `quota`. Nothing that creates a
-resource has run yet. The remaining likely failure points:
+`zones`, `types` (on-demand and spot), `quota`, and a full e2-micro cycle of
+`init`, `list`, `run`, `push`, `pull`, `stop`, `start`, `cost` and `destroy`.
+Not yet run: `shell`, `init --spot`, `init --public-ip`, `init --gpu`.
 
-- `compute_v1` field names with embedded capitals are mangled by the generated
-  client (`network_i_p`, `nat_i_p`, `I_p_protocol`). If an attribute is
-  missing, print the object.
-- The operation-wait path assumes every mutating call returns an operation with
-  a `.name`. Some return a different shape.
+What the first runs showed, kept because each failed quietly or late:
+
+- `InstancesClient.list()` takes `project` and `zone` as keywords and nothing
+  else. A `filter` has to go in a `ListInstancesRequest`.
+- `operations.wait` returns after about two minutes whether or not the
+  operation is done, and a stop takes longer. `wait()` calls it again until the
+  status is DONE.
+- `start` returns when the instance is RUNNING; sshd answers about 30 seconds
+  later, and an IAP connection before that fails with 4003.
+- gcloud needs an SSH key at `~/.ssh/google_compute_engine` for OS Login, and
+  on a machine with no terminal it cannot prompt for a passphrase. Create it
+  once with `gcloud compute ssh NAME --tunnel-through-iap --quiet`.
 - `init` and `cost` read only the `PRICES` and `SPOT_PRICES` fallback tables,
   not the catalog. The tables matched the catalog on 2026-09-25.
 
-What the first run showed about pricing, kept because each gave a plausible
-wrong number rather than an error:
+Pricing, where each mistake gave a plausible wrong number rather than an
+error:
 
 - A GPU is its own SKU ("Nvidia L4 GPU running in Singapore"), including on
   G2/A2/A3 where the machine type includes it. Cores plus RAM alone priced
