@@ -1,27 +1,23 @@
 # What a small experiment costs
 
-Prices are `asia-southeast1` (Singapore), USD, checked 2026-09-24 against
-public price pages. Nothing here was read from a billing account, so treat
-them as list prices and confirm with `glab types` once the tool is pointed at
-a project. Spot prices move; Google republishes them at most monthly, but the
+Prices are `asia-southeast1` (Singapore), USD, read from the Cloud Billing
+Catalog on 2026-09-25 by `glab types`. They are list prices, before any
+credits or discounts on the account. Spot prices move; Google republishes them at most monthly, but the
 rate you get is the rate at launch.
 
 ## The rates that matter
 
 | Resource | On-demand /hr | Spot /hr |
 |---|---|---|
-| `e2-medium` (2 vCPU, 4GB) | $0.0447 | $0.0134 |
+| `e2-medium` (2 vCPU, 4GB) | $0.0413 | $0.0248 |
 | `n1-standard-4` (4 vCPU, 15GB) | $0.2344 | $0.0623 |
 | `g2-standard-4` (4 vCPU, 16GB, 1x L4 24GB) | $0.8720 | $0.5233 |
-| `n1-standard-4` + 1x T4 | see below | see below |
+| `n1-standard-4` + 1x T4 16GB | $0.6044 | $0.1744 |
 
-The T4 is not a machine type. On Compute Engine it is an accelerator you bolt
-onto an N1, and it is billed as a separate line, so the cost is the N1 rate
-plus the T4 rate. I could not confirm the Singapore T4 accelerator rate from a
-source I trust, so it is left blank rather than guessed. `glab types` reads it
-from the Billing Catalog. If you want a number today, the L4 row above is a
-complete, verified price for a comparable single-GPU machine, and the L4 is
-the faster card.
+The T4 is not a machine type. On Compute Engine it is an accelerator you attach
+to an N1, billed as a separate line: $0.37/hr on-demand, $0.1121/hr spot. The
+row above is the N1 rate plus the T4 rate. The L4 in a G2 costs more per hour
+and is the faster card.
 
 Other lines that show up on the bill:
 
@@ -39,7 +35,7 @@ Other lines that show up on the bill:
 disk each.
 
 ```
-compute   2 x $0.0134 x 0.17h  = $0.005
+compute   2 x $0.0248 x 0.17h  = $0.008
 disk      40GB x $0.12/730h x 0.17h = $0.001
                                  -------
                                  ~$0.01
@@ -114,12 +110,13 @@ Same work, `ap-southeast-1`, verified against the account:
 
 | | AWS | GCP |
 |---|---|---|
-| Cheapest single-GPU, on-demand | `g4dn.xlarge` T4 16GB, $0.736/hr | `g2-standard-4` L4 24GB, $0.872/hr |
-| Same, spot | ~$0.313/hr | $0.523/hr |
+| Cheapest single-GPU, on-demand | `g4dn.xlarge` T4 16GB, $0.736/hr | `n1-standard-4` + T4 16GB, $0.604/hr |
+| Same, spot | ~$0.313/hr | $0.174/hr |
+| L4 24GB, on-demand / spot | not offered | `g2-standard-4`, $0.872 / $0.523/hr |
 | Block storage | $0.08/GB-month | ~$0.12/GB-month |
 | Cross-AZ / cross-zone egress | $0.01/GB each way | $0.01/GB each way |
 
-AWS is cheaper per GPU-hour in Singapore. GCP gives you a newer card with more
-VRAM for the extra, and has L4, A100 and H100 in Singapore where AWS has only
+For a T4, GCP is $0.13/hr cheaper on-demand and $0.14/hr cheaper on spot in
+Singapore. The L4 costs more than either T4 and has 24GB of VRAM. GCP has L4, A100 and H100 in Singapore where AWS has only
 T4 and one very large A100 machine. For experiments in the dollars, the
 availability difference matters more than the price difference.

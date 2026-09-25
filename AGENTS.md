@@ -33,8 +33,8 @@ resource has run yet. The remaining likely failure points:
   missing, print the object.
 - The operation-wait path assumes every mutating call returns an operation with
   a `.name`. Some return a different shape.
-- `PRICES` and `SPOT_PRICES` disagree with the Billing Catalog for E2, and
-  `init` and `cost` read only those tables.
+- `init` and `cost` read only the `PRICES` and `SPOT_PRICES` fallback tables,
+  not the catalog. The tables matched the catalog on 2026-09-25.
 
 What the first run showed about pricing, kept because each gave a plausible
 wrong number rather than an error:
@@ -44,6 +44,8 @@ wrong number rather than an error:
   g2-standard-4 at $0.18/h instead of $0.87.
 - "E2 Custom Instance Core" and "N2 Custom Extended Instance Ram" sit next to
   the standard SKUs, so the description match is exact.
+- N1 SKUs say "N1 Predefined Instance Core"; every other family omits
+  "Predefined".
 - Shared-core types bill a total vCPU fraction: e2-micro is 0.25 vCPU, not 2.
 - G4 below 48 vCPU is a fractional vGPU with its own SKU; B200 and TPUs are
   priced differently again. These return no price.

@@ -66,16 +66,17 @@ SHORTLIST = ["e2-micro", "e2-small", "e2-medium",
              "n2-standard-2", "n2-standard-4", "c3-standard-4"]
 
 # Fallback prices, USD/hour, asia-southeast1, used only when the Billing
-# Catalog is unreachable. Verified against public price pages on 2026-09-24;
-# the API is the source of truth and these drift.
+# Catalog is unreachable. Computed by `machine_price` from the catalog on
+# 2026-09-25; the API is the source of truth and these drift.
 PRICES = {
-    "e2-micro": 0.0112, "e2-small": 0.0224, "e2-medium": 0.0447,
-    "n1-standard-4": 0.2344, "n2-standard-2": 0.1067, "n2-standard-4": 0.2134,
-    "g2-standard-4": 0.8720, "g2-standard-8": 1.0417,
+    "e2-micro": 0.0103, "e2-small": 0.0207, "e2-medium": 0.0413,
+    "n1-standard-4": 0.2344, "n2-standard-2": 0.1198, "n2-standard-4": 0.2396,
+    "c3-standard-4": 0.2487, "g2-standard-4": 0.8720, "g2-standard-8": 1.0531,
 }
 SPOT_PRICES = {
-    "e2-micro": 0.0034, "e2-small": 0.0067, "e2-medium": 0.0134,
-    "n1-standard-4": 0.0623, "g2-standard-4": 0.5233,
+    "e2-micro": 0.0062, "e2-small": 0.0124, "e2-medium": 0.0248,
+    "n1-standard-4": 0.0623, "n2-standard-2": 0.0459, "n2-standard-4": 0.0917,
+    "c3-standard-4": 0.1341, "g2-standard-4": 0.5233, "g2-standard-8": 0.6319,
 }
 
 # Persistent disk, USD/GB-month, asia-southeast1. A stopped instance still pays
@@ -347,7 +348,8 @@ def machine_price(machine_type, region, spot=False):
     hours and GB hours per family, plus GPU hours, and the machine type is a
     bundle of those. Matching is on the exact description, "E2 Instance Core"
     and not "E2 Custom Instance Core", because a near miss gives a plausible
-    wrong number rather than an error."""
+    wrong number rather than an error. N1 alone says "N1 Predefined Instance
+    Core"."""
     family = machine_type.split("-")[0].upper()
     prefix = "Spot Preemptible " if spot else ""
     core = ram = None
@@ -355,9 +357,9 @@ def machine_price(machine_type, region, spot=False):
         desc = sku.get("description", "")
         if sku.get("category", {}).get("resourceFamily") != "Compute":
             continue
-        if re.match(rf"^{prefix}{family} Instance Core running in ", desc):
+        if re.match(rf"^{prefix}{family} (Predefined )?Instance Core running in ", desc):
             core = sku_hourly(sku)
-        elif re.match(rf"^{prefix}{family} Instance Ram running in ", desc):
+        elif re.match(rf"^{prefix}{family} (Predefined )?Instance Ram running in ", desc):
             ram = sku_hourly(sku)
     spec = None
     for zone in zone_names(region):
