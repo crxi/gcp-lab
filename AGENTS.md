@@ -27,7 +27,8 @@ API call does. Don't add abstraction that hides the calls.
 Confirmed against a real project on 2026-09-25: `whoami`, `project`, `zone`,
 `zones`, `types` (on-demand and spot), `quota`, and a full e2-micro cycle of
 `init`, `list`, `run`, `push`, `pull`, `stop`, `start`, `cost` and `destroy`.
-Not yet run: `shell`, `init --spot`, `init --public-ip`, `init --gpu`.
+`init --spot` ran via `experiments/ping-latency`. Not yet run: `shell`,
+`init --public-ip`, `init --gpu`.
 
 What the first runs showed, kept because each failed quietly or late:
 

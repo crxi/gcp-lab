@@ -368,7 +368,7 @@ class PingExperiment(unittest.TestCase):
               "rtt min/avg/max/mdev = 0.146/0.211/0.780/0.114 ms\n")
 
     def test_parses_counts_and_rtt(self):
-        parsed = ping.parse_ping(self.OUTPUT)
+        parsed = ping.parse_summary(self.OUTPUT)
         self.assertEqual((parsed["sent"], parsed["received"]), (50, 50))
         self.assertEqual(parsed["loss_percent"], 0.0)
         self.assertEqual(parsed["avg_ms"], 0.211)
@@ -378,7 +378,7 @@ class PingExperiment(unittest.TestCase):
         output = ("--- 10.148.0.3 ping statistics ---\n"
                   "50 packets transmitted, 0 received, 100% packet loss, "
                   "time 10201ms\n")
-        parsed = ping.parse_ping(output)
+        parsed = ping.parse_summary(output)
         self.assertEqual(parsed["loss_percent"], 100.0)
         self.assertNotIn("avg_ms", parsed)
 
@@ -399,20 +399,52 @@ class PingExperiment(unittest.TestCase):
         self.assertEqual(rule["allowed"], [{"I_p_protocol": "icmp"}])
 
     def test_teardown_skips_instances_that_never_launched(self):
-        """A failure before launch used to print `no instance named ...`."""
-        with mock.patch.object(glab, "write_config"), \
-                mock.patch.object(glab, "describe", return_value=[]), \
-                mock.patch.object(glab, "cmd_destroy") as destroy, \
-                mock.patch.object(ping, "drop_icmp_rule"):
+        """A failure before launch leaves nothing to delete."""
+        client = mock.MagicMock()
+        client.delete.side_effect = glab.NotFound("nope")
+        with mock.patch.object(glab, "instances_client", return_value=client), \
+                mock.patch.object(glab, "current_project", return_value="p"), \
+                mock.patch.object(glab, "wait") as wait, \
+                mock.patch.object(ping, "drop_icmp_rule") as drop:
             ping.teardown([("ping-a", "asia-southeast1-b"),
                            ("ping-b", "asia-southeast1-b")], keep=False)
-        destroy.assert_not_called()
+        wait.assert_not_called()
+        drop.assert_called_once()
+
+    def test_teardown_issues_both_deletes_before_waiting(self):
+        """Deleting takes about two minutes each; the two run together."""
+        calls = []
+        client = mock.MagicMock()
+        client.delete.side_effect = lambda **kw: calls.append(
+            ("delete", kw["instance"])) or kw["instance"]
+        with mock.patch.object(glab, "instances_client", return_value=client), \
+                mock.patch.object(glab, "current_project", return_value="p"), \
+                mock.patch.object(glab, "wait",
+                                  side_effect=lambda op, z: calls.append(("wait", op))), \
+                mock.patch.object(ping, "drop_icmp_rule"):
+            ping.teardown([("ping-a", "z"), ("ping-b", "z")], keep=False)
+        self.assertEqual(calls, [("delete", "ping-a"), ("delete", "ping-b"),
+                                 ("wait", "ping-a"), ("wait", "ping-b")])
+
+    def test_reply_and_missing_reply_lines(self):
+        self.assertEqual(ping.REPLY.search(
+            "64 bytes from 10.148.0.4: icmp_seq=12 ttl=64 time=0.262 ms").groups(),
+            ("12", "0.262"))
+        self.assertEqual(ping.NO_REPLY.search(
+            "no answer yet for icmp_seq=7").group(1), "7")
+
+    def test_percentile_is_nearest_rank(self):
+        values = list(range(1, 101))
+        self.assertEqual(ping.percentile(values, 50), 50)
+        self.assertEqual(ping.percentile(values, 99), 99)
+        self.assertEqual(ping.percentile([5.0], 90), 5.0)
+        self.assertIsNone(ping.percentile([], 50))
 
     def test_keep_destroys_nothing(self):
-        with mock.patch.object(glab, "cmd_destroy") as destroy, \
+        with mock.patch.object(glab, "instances_client") as client, \
                 mock.patch.object(ping, "drop_icmp_rule") as drop:
             ping.teardown([("ping-a", "asia-southeast1-b")], keep=True)
-        destroy.assert_not_called()
+        client.assert_not_called()
         drop.assert_not_called()
 
 
