@@ -24,19 +24,29 @@ API call does. Don't add abstraction that hides the calls.
 
 ## Unverified
 
-No call in `glab.py` has run against a real project. Before trusting any of it,
-run the command and fix what breaks. The likely failure points, in order:
+Confirmed against a real project on 2026-09-25: `whoami`, `project`, `zone`,
+`zones`, `types` (on-demand and spot) and `quota`. Nothing that creates a
+resource has run yet. The remaining likely failure points:
 
-- `machine_price` matches Billing Catalog SKUs with a regex on the description
-  string. Compute Engine sells core-hours and GB-hours per family, not machine
-  types, so the price is `vcpu * core_rate + ram_gb * ram_rate`. A wrong family
-  match gives a plausible wrong number instead of an error. Check one type
-  against the console before believing the table.
 - `compute_v1` field names with embedded capitals are mangled by the generated
   client (`network_i_p`, `nat_i_p`, `I_p_protocol`). If an attribute is
   missing, print the object.
 - The operation-wait path assumes every mutating call returns an operation with
   a `.name`. Some return a different shape.
+- `PRICES` and `SPOT_PRICES` disagree with the Billing Catalog for E2, and
+  `init` and `cost` read only those tables.
+
+What the first run showed about pricing, kept because each gave a plausible
+wrong number rather than an error:
+
+- A GPU is its own SKU ("Nvidia L4 GPU running in Singapore"), including on
+  G2/A2/A3 where the machine type includes it. Cores plus RAM alone priced
+  g2-standard-4 at $0.18/h instead of $0.87.
+- "E2 Custom Instance Core" and "N2 Custom Extended Instance Ram" sit next to
+  the standard SKUs, so the description match is exact.
+- Shared-core types bill a total vCPU fraction: e2-micro is 0.25 vCPU, not 2.
+- G4 below 48 vCPU is a fractional vGPU with its own SKU; B200 and TPUs are
+  priced differently again. These return no price.
 
 Update this section as things are confirmed rather than leaving it whole.
 
@@ -76,8 +86,8 @@ Update this section as things are confirmed rather than leaving it whole.
   `GPUS_ALL_REGIONS`, the per-region count for the model, and a separate
   per-region count for the preemptible/spot version. A free-trial project
   cannot request any of them until billing is upgraded.
-- `asia-southeast1` has T4 and L4 in all three zones, A100 40GB in a and c,
-  A100 80GB in c only, H100 in b and c. All three zones are labelled Jurong
+- `asia-southeast1` (as of 2026-09-25) has T4, L4 and A100 40GB in all three
+  zones, A100 80GB in c only, H100 in b and c, B200 in b only. All three zones are labelled Jurong
   West; Google publishes no zone-level location and reassigns the letter-to-
   hardware mapping, so don't reason about buildings.
 

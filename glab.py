@@ -12,8 +12,8 @@ carries the label `lab=1`, and it only touches resources carrying that label.
     glab run box 'nvidia-smi'
     glab destroy box
 
-Nothing in this file has been run against a real project yet. Read the
-"unverified" section of the README before trusting a number it prints.
+The read-only commands have run against a real project; the ones that create
+resources have not. See the "Unverified" section of AGENTS.md.
 """
 
 import argparse
@@ -251,6 +251,8 @@ def zone_catalog(zone):
             "gpu": (f"{gpus.guest_accelerator_count} x "
                     f"{gpus.guest_accelerator_type}" if gpus else "-"),
             "gpus": gpus.guest_accelerator_count if gpus else 0,
+            "accelerator": gpus.guest_accelerator_type if gpus else None,
+            "ram_gb": m.memory_mb / 1024,
         }
     return out
 
@@ -305,30 +307,57 @@ def sku_hourly(sku):
     return int(tier.get("units", 0)) + tier.get("nanos", 0) / 1e9
 
 
+# Shared-core types are billed as this many vCPUs in total, not per vCPU.
+SHARED_CORE = {"e2-micro": 0.25, "e2-small": 0.5, "e2-medium": 1.0,
+               "f1-micro": 0.2, "g1-small": 0.5}
+
+# Accelerator type -> the start of its Billing Catalog description. A GPU is a
+# separate SKU from the cores and RAM, including on G2/A2/A3 where it comes
+# with the machine type. Types not listed here (B200, TPUs) are priced some
+# other way and come back as None.
+GPU_SKU = {
+    "nvidia-l4": "Nvidia L4 GPU",
+    "nvidia-tesla-t4": "Nvidia Tesla T4 GPU",
+    "nvidia-tesla-p4": "Nvidia Tesla P4 GPU",
+    "nvidia-tesla-a100": "Nvidia Tesla A100 GPU",
+    "nvidia-a100-80gb": "Nvidia Tesla A100 80GB GPU",
+    "nvidia-h100-80gb": "Nvidia H100 80GB GPU",
+    "nvidia-h100-mega-80gb": "Nvidia H100 80GB Mega GPU",
+    "nvidia-rtx-pro-6000": "RTX 6000 96GB",
+}
+
+
+def gpu_price(accelerator, region, spot=False):
+    """USD/hour for one GPU, or None if the catalog has no match."""
+    name = GPU_SKU.get(accelerator)
+    if not name:
+        return None
+    tail = "attached to Spot Preemptible VMs running in" if spot else "running in"
+    pattern = rf"^{re.escape(name)} {tail} "
+    for sku in compute_skus(region):
+        if re.match(pattern, sku.get("description", "")):
+            return sku_hourly(sku)
+    return None
+
+
 def machine_price(machine_type, region, spot=False):
-    """Price one machine type by summing its vCPU and RAM SKUs.
+    """Price one machine type by summing its vCPU, RAM and GPU SKUs.
 
     Compute Engine does not sell a machine type as a line item. It sells core
-    hours and GB hours per family, and the machine type is a bundle of those.
-    So the price is (vcpu * core rate) + (ram_gb * ram rate), which is also why
-    a wrong family match gives a plausible but wrong number rather than an
-    error."""
+    hours and GB hours per family, plus GPU hours, and the machine type is a
+    bundle of those. Matching is on the exact description, "E2 Instance Core"
+    and not "E2 Custom Instance Core", because a near miss gives a plausible
+    wrong number rather than an error."""
     family = machine_type.split("-")[0].upper()
+    prefix = "Spot Preemptible " if spot else ""
     core = ram = None
     for sku in compute_skus(region):
         desc = sku.get("description", "")
-        category = sku.get("category", {})
-        if category.get("resourceFamily") != "Compute":
+        if sku.get("category", {}).get("resourceFamily") != "Compute":
             continue
-        if spot and "Spot Preemptible" not in desc:
-            continue
-        if not spot and "Preemptible" in desc:
-            continue
-        if not re.match(rf"^{family}\b", desc.replace("Spot Preemptible ", "")):
-            continue
-        if "Core" in desc or "vCPU" in desc:
+        if re.match(rf"^{prefix}{family} Instance Core running in ", desc):
             core = sku_hourly(sku)
-        elif "Ram" in desc or "RAM" in desc:
+        elif re.match(rf"^{prefix}{family} Instance Ram running in ", desc):
             ram = sku_hourly(sku)
     spec = None
     for zone in zone_names(region):
@@ -337,7 +366,18 @@ def machine_price(machine_type, region, spot=False):
             break
     if not spec or core is None or ram is None:
         return None
-    return core * spec["vcpu"] + ram * spec["ram"]
+    # G4 below 48 vCPU is a slice of one GPU (g4-standard-6 is 1/8), billed
+    # under a separate vGPU SKU rather than the full-GPU one.
+    if family == "G4" and spec["vcpu"] < 48:
+        return None
+    vcpu = SHARED_CORE.get(machine_type, spec["vcpu"])
+    price = core * vcpu + ram * spec.get("ram_gb", spec["ram"])
+    if spec.get("gpus"):
+        each = gpu_price(spec.get("accelerator"), region, spot)
+        if each is None:
+            return None
+        price += each * spec["gpus"]
+    return price
 
 
 def region_prices(region, names, spot=False):
@@ -421,11 +461,14 @@ def cmd_login(args):
 
 def cmd_whoami(args):
     creds, default_project = credentials()
-    email = getattr(creds, "service_account_email", None)
-    if not email:
-        email = getattr(creds, "_quota_project_id", None) or "user credentials"
+    # User credentials carry no email, and printing one is not wanted anyway;
+    # say what kind of credential it is and which project quota is billed to.
+    kind = ("service account" if getattr(creds, "service_account_email", None)
+            else "user credentials")
+    quota = getattr(creds, "quota_project_id", None) or "(none)"
     print(f"project : {current_project()}")
-    print(f"identity: {email}")
+    print(f"identity: {kind}")
+    print(f"quota   : {quota}")
     print(f"zone    : {read_config().get('zone', '(unset)')}")
 
 
@@ -445,12 +488,18 @@ def cmd_zone(args):
 
 
 def cmd_zones(args):
+    # Every zone is ~120 zones at two calls each, so default to the region of
+    # the working zone and fetch in parallel.
     region = args.region
-    rows = []
-    for zone in zone_names(region):
+    if not region and not args.all and read_config().get("zone"):
+        region = current_region()
+
+    def row(zone):
         gpus = zone_accelerators(zone)
-        rows.append([zone, len(zone_catalog(zone)),
-                     ", ".join(sorted(gpus)) or "-"])
+        return [zone, len(zone_catalog(zone)), ", ".join(sorted(gpus)) or "-"]
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        rows = list(pool.map(row, zone_names(region)))
     table(rows, ["zone", "machine types", "attachable GPUs"])
 
 
@@ -762,7 +811,9 @@ def build_parser():
     sp.set_defaults(fn=cmd_zone)
 
     sp = sub.add_parser("zones", help="zones, and which GPUs they sell")
-    sp.add_argument("--region", help="only this region")
+    sp.add_argument("--region", help="only this region "
+                    "(default: the working zone's region)")
+    sp.add_argument("--all", action="store_true", help="every zone")
     sp.set_defaults(fn=cmd_zones)
 
     sp = sub.add_parser("types", help="machine types and prices in the zone")

@@ -173,6 +173,52 @@ class MachinePrice(unittest.TestCase):
         skus = [self.sku("N2 Instance Core running in Singapore", 0, 31_000_000)]
         self.assertIsNone(self.price(skus))
 
+    def test_custom_skus_are_not_matched(self):
+        skus = [self.sku("N2 Instance Core running in Singapore", 0, 31_000_000),
+                self.sku("N2 Instance Ram running in Singapore", 0, 4_000_000),
+                self.sku("N2 Custom Instance Core running in Singapore", 0, 99_000_000),
+                self.sku("N2 Custom Extended Instance Ram running in Singapore",
+                         0, 99_000_000)]
+        self.assertAlmostEqual(self.price(skus), 4 * 0.031 + 16 * 0.004)
+
+    def test_gpu_is_added_to_cores_and_ram(self):
+        skus = [self.sku("G2 Instance Core running in Singapore", 0, 30_000_000),
+                self.sku("G2 Instance Ram running in Singapore", 0, 4_000_000),
+                self.sku("Nvidia L4 GPU running in Singapore", 0, 690_000_000),
+                self.sku("Nvidia L4 GPU attached to Spot Preemptible VMs "
+                         "running in Singapore", 0, 410_000_000)]
+        spec = {"vcpu": 4, "ram": 16, "gpus": 1, "accelerator": "nvidia-l4"}
+        with mock.patch.object(glab, "compute_skus", return_value=skus), \
+                mock.patch.object(glab, "zone_names",
+                                  return_value=["asia-southeast1-b"]), \
+                mock.patch.object(glab, "zone_catalog",
+                                  return_value={"g2-standard-4": spec}):
+            price = glab.machine_price("g2-standard-4", "asia-southeast1")
+        self.assertAlmostEqual(price, 4 * 0.030 + 16 * 0.004 + 0.690)
+
+    def test_unknown_gpu_returns_none_not_the_cpu_price(self):
+        skus = [self.sku("A4 Instance Core running in Singapore", 0, 30_000_000),
+                self.sku("A4 Instance Ram running in Singapore", 0, 4_000_000)]
+        spec = {"vcpu": 224, "ram": 3968, "gpus": 8, "accelerator": "nvidia-b200"}
+        with mock.patch.object(glab, "compute_skus", return_value=skus), \
+                mock.patch.object(glab, "zone_names",
+                                  return_value=["asia-southeast1-b"]), \
+                mock.patch.object(glab, "zone_catalog",
+                                  return_value={"a4-highgpu-8g": spec}):
+            self.assertIsNone(glab.machine_price("a4-highgpu-8g", "asia-southeast1"))
+
+    def test_shared_core_bills_its_fraction_not_its_vcpu_count(self):
+        skus = [self.sku("E2 Instance Core running in Singapore", 0, 27_000_000),
+                self.sku("E2 Instance Ram running in Singapore", 0, 3_600_000)]
+        spec = {"vcpu": 2, "ram": 1, "gpus": 0}
+        with mock.patch.object(glab, "compute_skus", return_value=skus), \
+                mock.patch.object(glab, "zone_names",
+                                  return_value=["asia-southeast1-b"]), \
+                mock.patch.object(glab, "zone_catalog",
+                                  return_value={"e2-micro": spec}):
+            price = glab.machine_price("e2-micro", "asia-southeast1")
+        self.assertAlmostEqual(price, 0.25 * 0.027 + 1 * 0.0036)
+
 
 class Labels(unittest.TestCase):
     def test_only_lab_labelled_resources_count(self):
