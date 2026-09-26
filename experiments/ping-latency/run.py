@@ -29,6 +29,7 @@ import statistics
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -61,18 +62,18 @@ def quietly(fn, *args):
         return fn(*args)
 
 
-def icmp_rule():
+def icmp_rule(name):
     """Allow ICMP from anything tagged `lab` to anything tagged `lab`. Using
     the tag as the source rather than a CIDR keeps it inside the VPC."""
     client = compute_v1.FirewallsClient()
     project = glab.current_project()
     try:
-        client.get(project=project, firewall=ICMP_RULE)
+        client.get(project=project, firewall=name)
         return
     except NotFound:
         pass
     rule = compute_v1.Firewall(
-        name=ICMP_RULE,
+        name=name,
         description="ping-latency test: ICMP between lab instances",
         network="global/networks/default",
         direction="INGRESS",
@@ -81,18 +82,18 @@ def icmp_rule():
         allowed=[compute_v1.Allowed(I_p_protocol="icmp")],
     )
     glab.wait(client.insert(project=project, firewall_resource=rule))
-    log(f"created firewall rule {ICMP_RULE} (icmp, lab -> lab)")
+    log(f"created firewall rule {name} (icmp, lab -> lab)")
 
 
-def drop_icmp_rule():
+def drop_icmp_rule(name):
     try:
         glab.wait(compute_v1.FirewallsClient().delete(
-            project=glab.current_project(), firewall=ICMP_RULE))
-        log(f"deleted firewall rule {ICMP_RULE}")
+            project=glab.current_project(), firewall=name))
+        log(f"deleted firewall rule {name}")
     except NotFound:
         pass
     except Exception as e:
-        log(f"could not delete {ICMP_RULE}: {e}")
+        log(f"could not delete {name}: {e}")
 
 
 def parse_summary(output):
@@ -183,16 +184,22 @@ def stream_ping(name, zone, target_ip, seconds, interval, size):
     return proc.returncode, rtts, lost, "".join(lines)
 
 
-def teardown(placed, keep):
+def teardown(placed, keep, run_id, rule_name):
     if keep:
         log(f"--keep: {', '.join(n for n, _ in placed)} left running. "
-            f"`glab destroy NAME` when done, and delete {ICMP_RULE}.")
+            f"`glab destroy NAME` when done, and delete {rule_name}.")
         return
     client = glab.instances_client()
     project = glab.current_project()
     ops = []
     for name, zone in placed:
         try:
+            instance = client.get(project=project, zone=zone, instance=name,
+                                  timeout=60)
+            if (not run_id or not glab.has_lab_label(instance)
+                    or instance.labels.get("lab-run") != run_id):
+                log(f"leaving {name} in {zone}: not owned by this run")
+                continue
             ops.append((name, client.delete(project=project, zone=zone,
                                             instance=name), zone))
         except NotFound:
@@ -207,7 +214,7 @@ def teardown(placed, keep):
             log(f"deleted {name}")
         except BaseException as e:
             log(f"{name} may still exist: {e}. check `glab list --all-zones`.")
-    drop_icmp_rule()
+    drop_icmp_rule(rule_name)
 
 
 def show_leftovers():
@@ -270,6 +277,8 @@ def main():
     zone_a = glab.current_zone()
     zone_b = args.zone_b or zone_a
     buy = "on-demand" if args.on_demand else "spot"
+    run_id = uuid.uuid4().hex
+    rule_name = f"{ICMP_RULE}-{run_id[:12]}"
     placed = [("ping-a", zone_a), ("ping-b", zone_b)]
     prices = glab.PRICES if args.on_demand else glab.SPOT_PRICES
     price = prices.get(args.type)
@@ -290,7 +299,7 @@ def main():
     }
 
     try:
-        icmp_rule()
+        icmp_rule(rule_name)
         for name, zone in placed:
             glab.write_config(zone=zone)
             log(f"creating {name} in {zone}")
@@ -298,7 +307,8 @@ def main():
                 name=name, type=args.type, disk=args.disk,
                 disk_type="pd-balanced", gpu=args.gpu, image=None,
                 spot=not args.on_demand, public_ip=False,
-                max_run=MAX_RUN_MIN + args.seconds // 60 + 1))
+                max_run=MAX_RUN_MIN + args.seconds // 60 + 1,
+                run_id=run_id))
 
         found = {}
         for name, zone in placed:
@@ -346,7 +356,7 @@ def main():
             result["raw"] = out
             log(f"ping exited {code}:\n{out[-2000:]}")
     finally:
-        teardown(placed, args.keep)
+        teardown(placed, args.keep, run_id, rule_name)
         glab.write_config(zone=zone_a)
         result["elapsed_s"] = round(time.time() - started, 1)
 

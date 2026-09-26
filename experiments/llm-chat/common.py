@@ -129,22 +129,26 @@ def quietly(fn, *args):
         return fn(*args)
 
 
-def create(name, zone, type_, disk, spot, max_run, image=None, public_ip=False):
+def create(name, zone, type_, disk, spot, max_run, image=None, public_ip=False,
+           run_id=None):
     glab.write_config(zone=zone)
     quietly(glab.cmd_init, SimpleNamespace(
         name=name, type=type_, disk=disk, disk_type="pd-balanced", gpu=None,
-        image=image, spot=spot, public_ip=public_ip, max_run=max_run))
+        image=image, spot=spot, public_ip=public_ip, max_run=max_run,
+        run_id=run_id))
 
 
 def create_gpu(name, zone, type_, disk, spot, max_run, image=None,
-               public_ip=False):
+               public_ip=False, run_id=None, placed=None):
     """Create a GPU instance in `zone`, or in the next zone in ZONES when that
     one has no capacity. Returns the zone it was created in."""
     tried = []
     for z in [zone] + [z for z in ZONES if z != zone]:
+        if placed is not None:
+            placed.append((name, z))
         try:
             create(name, z, type_, disk, spot, max_run, image=image,
-                   public_ip=public_ip)
+                   public_ip=public_ip, run_id=run_id)
             return z
         except SystemExit as e:
             if "does not have enough resources" not in str(e):
@@ -241,13 +245,19 @@ def scp_to(name, zone, local, remote):
         capture_output=True, text=True, stdin=subprocess.DEVNULL)
 
 
-def delete_instances(placed):
-    """Issue every delete, then wait on them together."""
+def delete_instances(placed, run_id):
+    """Delete only instances labelled for this run, including failed launches."""
     client = glab.instances_client()
     project = glab.current_project()
     ops = []
     for name, zone in placed:
         try:
+            instance = client.get(project=project, zone=zone, instance=name,
+                                  timeout=60)
+            if (not run_id or not glab.has_lab_label(instance)
+                    or instance.labels.get("lab-run") != run_id):
+                log(f"leaving {name} in {zone}: not owned by this run")
+                continue
             ops.append((name, client.delete(project=project, zone=zone,
                                             instance=name), zone))
         except NotFound:

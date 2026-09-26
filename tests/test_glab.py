@@ -392,7 +392,7 @@ class PingExperiment(unittest.TestCase):
                 mock.patch.object(glab.compute_v1, "Allowed", dict), \
                 mock.patch.object(glab, "current_project", return_value="p"), \
                 mock.patch.object(glab, "wait"):
-            ping.icmp_rule()
+            ping.icmp_rule("lab-ping-test-example")
         rule = client.insert.call_args.kwargs["firewall_resource"]
         self.assertNotIn("source_ranges", rule)
         self.assertEqual(rule["source_tags"], ["lab"])
@@ -402,13 +402,14 @@ class PingExperiment(unittest.TestCase):
     def test_teardown_skips_instances_that_never_launched(self):
         """A failure before launch leaves nothing to delete."""
         client = mock.MagicMock()
-        client.delete.side_effect = glab.NotFound("nope")
+        client.get.side_effect = glab.NotFound("nope")
         with mock.patch.object(glab, "instances_client", return_value=client), \
                 mock.patch.object(glab, "current_project", return_value="p"), \
                 mock.patch.object(glab, "wait") as wait, \
                 mock.patch.object(ping, "drop_icmp_rule") as drop:
             ping.teardown([("ping-a", "asia-southeast1-b"),
-                           ("ping-b", "asia-southeast1-b")], keep=False)
+                           ("ping-b", "asia-southeast1-b")], keep=False,
+                          run_id="run-a", rule_name="rule-a")
         wait.assert_not_called()
         drop.assert_called_once()
 
@@ -416,6 +417,7 @@ class PingExperiment(unittest.TestCase):
         """Deleting takes about two minutes each; the two run together."""
         calls = []
         client = mock.MagicMock()
+        client.get.return_value.labels = {"lab": "1", "lab-run": "run-a"}
         client.delete.side_effect = lambda **kw: calls.append(
             ("delete", kw["instance"])) or kw["instance"]
         with mock.patch.object(glab, "instances_client", return_value=client), \
@@ -423,9 +425,20 @@ class PingExperiment(unittest.TestCase):
                 mock.patch.object(glab, "wait",
                                   side_effect=lambda op, z: calls.append(("wait", op))), \
                 mock.patch.object(ping, "drop_icmp_rule"):
-            ping.teardown([("ping-a", "z"), ("ping-b", "z")], keep=False)
+            ping.teardown([("ping-a", "z"), ("ping-b", "z")], keep=False,
+                          run_id="run-a", rule_name="rule-a")
         self.assertEqual(calls, [("delete", "ping-a"), ("delete", "ping-b"),
                                  ("wait", "ping-a"), ("wait", "ping-b")])
+
+    def test_teardown_preserves_instances_from_other_runs(self):
+        client = mock.MagicMock()
+        client.get.return_value.labels = {"lab": "1", "lab-run": "other-run"}
+        with mock.patch.object(glab, "instances_client", return_value=client), \
+                mock.patch.object(glab, "current_project", return_value="p"), \
+                mock.patch.object(ping, "drop_icmp_rule") as drop:
+            ping.teardown([("ping-a", "z")], False, "run-a", "rule-a")
+        client.delete.assert_not_called()
+        drop.assert_called_once_with("rule-a")
 
     def test_reply_and_missing_reply_lines(self):
         self.assertEqual(ping.REPLY.search(
@@ -455,7 +468,8 @@ class PingExperiment(unittest.TestCase):
     def test_keep_destroys_nothing(self):
         with mock.patch.object(glab, "instances_client") as client, \
                 mock.patch.object(ping, "drop_icmp_rule") as drop:
-            ping.teardown([("ping-a", "asia-southeast1-b")], keep=True)
+            ping.teardown([("ping-a", "asia-southeast1-b")], keep=True,
+                          run_id="run-a", rule_name="rule-a")
         client.assert_not_called()
         drop.assert_not_called()
 
