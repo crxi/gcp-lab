@@ -1,80 +1,142 @@
-# ping-latency
+# Measure network round-trip time
 
-Round-trip time between two Compute Engine instances over the VPC's internal
-network. The floor for anything that moves bytes between two machines, so it
-is worth knowing before measuring a KV-cache transfer on top of it.
+This test creates two small Google Cloud VMs. One sends a short packet to the
+other and measures how long the reply takes. That duration is the round-trip
+time (RTT), measured in milliseconds (ms). One millisecond is one thousandth
+of a second.
 
-```
-./run.py                              # two spot e2-micro, same zone, 60s
-./run.py --seconds 300                # ping for five minutes
-./run.py --zone-b asia-southeast1-c   # across zones in one region
-./run.py --type g2-standard-4         # an L4 pair, needs GPU quota
-./run.py --keep                       # leave them running
-```
+You do not need a GPU for this test. Complete the
+[repository setup and remote-connection check](../../README.md) first.
+Run the commands below on your computer, from the repository directory,
+with `.venv` activated.
 
-Defaults: `e2-micro`, spot, 10GB disk, ping every 0.2s for 60s (about 300
-packets) with a 56-byte payload, both instances in glab's working zone. A bare
-`./run.py` is a complete run of about five minutes. It needs `glab project`
-and `glab zone` set, and nothing else.
+## Run the first test
 
-## What you see
+Check the project and zone, then start the default test:
 
-Timestamped lines for each phase, then a line every 5 seconds while ping runs:
-
-```
-[10:31:12]     5s     25 replies  last 5s: min 0.301  avg 0.412  max 0.702 ms  lost so far 0
+```bash
+glab whoami
+python3 experiments/ping-latency/run.py
 ```
 
-At the end, the reply count and loss, min/p50/p90/p99/max/mean/stdev, a text
-histogram of the RTTs, and the path of the result JSON, then
-the output of `glab list --all-zones`. The JSON holds every
-RTT (`rtts_ms`), the sequence numbers that got no reply (`no_reply_seq`), and
-the same summary.
+The script creates `ping-a` and `ping-b` in the working zone. Both are small
+`e2-micro` Spot VMs. Spot means Google can reclaim them during a run; use
+`--on-demand` if you want regular VMs instead.
 
-## What it does
+Allow several minutes. The script creates the VMs, waits for remote access,
+pings for 60 seconds, and deletes the VMs. Keep the terminal open until the
+final resource listing appears. It sends a 56-byte payload about every
+0.2 seconds, so a full run collects roughly 300 replies.
 
-1. Adds a firewall rule allowing ICMP from the `lab` tag to the `lab` tag.
-2. Creates `ping-a` and `ping-b` with `glab init`, no external IP.
-3. Waits for RUNNING, then retries `ssh true` until sshd answers. An instance
-   is RUNNING before it accepts connections, and a fixed sleep is either too
-   short or wasted money.
-4. Runs `stdbuf -oL ping -i I -w SECONDS -s S -O` on `ping-a` against
-   `ping-b`'s internal IP and reads the replies as they arrive. `stdbuf` is
-   there because ping block-buffers into a pipe; `-O` reports a missing reply
-   when it happens.
-5. Writes every RTT and the summary to the result JSON.
-6. Deletes both instances together, then the ICMP rule, in a `finally`. If
-   that never runs, Compute Engine deletes the instances itself
-   `MAX_RUN_MIN` (in `run.py`) plus the ping time after they start.
-7. Prints `glab list --all-zones` as its last output, so the end of the run
-   shows whether anything is left.
+## Read the progress and summary
 
-## The firewall rule
+The terminal prints setup messages, then progress about every five seconds.
+For example, a line might look like this:
 
-`glab`'s standing rule allows tcp/22 from the IAP range only, so ICMP between
-two instances is dropped. Rather than widen that rule, the script adds a
-second one, `lab-ping-test-icmp`, whose source is the `lab` network tag rather
-than an address range: only instances already in the VPC and already tagged
-can send. It is deleted with the instances.
+```text
+5s  25 replies  last 5s: min 0.301  avg 0.412  max 0.702 ms  lost so far 0
+```
 
-## Cost
+The three times describe replies in that reporting interval. The running
+`lost so far` count records packets still awaiting a reply when ping checks;
+a delayed reply can arrive later. Use the final packet-loss percentage for
+the completed measurement.
 
-Two spot `e2-micro` for the ~5 minutes a run takes is under a tenth of a
-cent, plus the disks for the same time. Two
-`g2-standard-4` for 15 minutes is about $0.27. `../../COSTS.md` works both
-through.
+The final table includes:
 
-## Results
+| Field | Meaning |
+|---|---|
+| Replies and loss | How many sent packets received a reply, and the percentage that did not |
+| min / max | Fastest and slowest reply |
+| p50 | Median: at least half the replies were this fast or faster |
+| p90 / p99 | Times covering at least 90% / 99% of replies |
+| mean | Average reply time |
+| stdev | How much reply times varied around their average |
 
-| Run | Pair | Replies | min | p50 | p90 | p99 | max | mean (ms) |
-|---|---|---|---|---|---|---|---|---|
-| 2026-09-25 | spot e2-micro, both in asia-southeast1-b | 295/295 | 0.192 | 0.262 | 0.319 | 0.397 | 1.360 | 0.272 |
+Lower RTT means a shorter round trip. A high p99 relative to p50 means some
+replies took much longer than typical ones. RTT alone does not measure bulk
+transfer speed or model response time.
 
-The 1.36 ms maximum was the first reply; the other 294 were at or below
-0.60 ms. The run took 165 s end to end, 50 s of it deleting the instances.
-File: `results/20260925T023043Z-asia-southeast1-b-e2-micro.json`.
+## Open the saved result
 
-The AWS counterpart of this experiment measured 0.211 ms average between two
-`t3.micro` in one availability zone of `ap-southeast-1`, 0% loss over 50
-packets. The e2-micro pair above averaged 0.272 ms. e2-micro is a shared-core
-type, so this is not a like-for-like comparison of the networks.
+The script prints a JSON filename under `experiments/ping-latency/results/`.
+Open that exact file in a text editor. To format it in the terminal, replace
+`RESULT_FILE.json` with the printed path:
+
+```bash
+python3 -m json.tool RESULT_FILE.json
+```
+
+`rtts_ms` contains each measured RTT. `sent`, `received`, and `loss_percent`
+come from ping's final summary. `stats_ms` contains the timing statistics.
+`no_reply_seq` records packets whose replies had not arrived at a check;
+it is not necessarily a list of permanently lost packets.
+
+## Change one setting at a time
+
+Run a longer measurement:
+
+```bash
+python3 experiments/ping-latency/run.py --seconds 300
+```
+
+Compare two zones within Singapore, keeping the other settings unchanged:
+
+```bash
+python3 experiments/ping-latency/run.py --zone asia-southeast1-a --zone-b asia-southeast1-c
+```
+
+Use regular VMs instead of Spot:
+
+```bash
+python3 experiments/ping-latency/run.py --on-demand
+```
+
+Run `python3 experiments/ping-latency/run.py --help` for all options.
+Keep the default CPU type for your first comparisons; changing machine type
+also changes the conditions of the measurement.
+
+## Stop and clean up
+
+Press Ctrl-C once in the launch terminal to stop early, then wait for cleanup.
+A normal run deletes both VMs, their boot disks, and its temporary ICMP
+firewall rule. ICMP is the network protocol used by ping. The rule allows
+ping traffic between VMs tagged `lab` within the project's network.
+
+The VMs also have automatic deletion limits of about 20 minutes plus the
+requested ping duration. The `--keep` option leaves them available for
+inspection until that limit; it also leaves the temporary firewall rule.
+
+Check what remains:
+
+```bash
+glab list --all-zones
+```
+
+If a VM remains, set its zone from the listing and delete it:
+
+```bash
+glab zone ZONE_FROM_LIST
+glab destroy ping-a
+```
+
+Repeat for `ping-b` in its listed zone. For a leftover firewall rule, use the
+exact name printed by your run. Replace both placeholders:
+
+```bash
+gcloud compute firewall-rules delete RULE_NAME_FROM_RUN --project YOUR_PROJECT_ID
+```
+
+## Resolve common failures
+
+| Symptom | Next step |
+|---|---|
+| `glab` is not found | Activate `.venv`, add `~/.local/bin` to PATH, and rerun the setup instructions |
+| An instance name already exists | Run `glab list --all-zones`; finish or clean up the earlier test before rerunning |
+| SSH or IAP access fails | Repeat the remote-connection check in the repository README |
+| Quota exceeded | Read the metric named in the error and ask the project administrator to check its quota |
+| No replies | Read the saved error output, check both VM states, and check network/firewall permissions |
+
+For guided help, give an LLM this page and the repository README. Ask it to
+explain your command and error, then help you inspect the result and confirm
+that the test resources have been removed.
