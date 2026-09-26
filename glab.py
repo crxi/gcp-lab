@@ -170,6 +170,11 @@ def instances_client():
     return compute_v1.InstancesClient()
 
 
+# An image insert reads the whole source disk. The 50 GB builder disk took a
+# few minutes on 2026-09-25; a larger disk can outlast wait()'s default.
+IMAGE_WAIT_S = 3600
+
+
 def wait(operation, zone=None, timeout=600):
     """Block on a zone or global operation. Every mutating call returns one."""
     if operation is None:
@@ -861,10 +866,12 @@ def cmd_cost(args):
         return
     rows, hourly, unknown = [], 0.0, []
     for i in found:
-        price, source = (0.0, "stopped") if i["state"] == "terminated" else \
+        # Only a running instance bills for compute; staging, stopping and
+        # stopped ones are listed at $0.
+        price, source = (0.0, i["state"]) if i["state"] != "running" else \
             instance_price(i["type"], i["zone"], i["buy"] == "spot",
                            i.get("accelerators", []))
-        if i["state"] != "terminated":
+        if i["state"] == "running":
             if price is None:
                 unknown.append(i["name"])
             else:
@@ -946,8 +953,10 @@ def cmd_image_create(args):
     )
     print(f"creating image {args.name} from {args.source}'s disk "
           "(a few minutes)")
+    # Longer than wait()'s default: a caller that gives up early may delete
+    # the source disk while the image is still being read from it.
     wait(images_client().insert(project=current_project(),
-                                image_resource=image))
+                                image_resource=image), timeout=IMAGE_WAIT_S)
     print(f"image {args.name} ready. use it with "
           f"`glab init NAME --image {args.name}`"
           + (f" or --image family/{args.family}" if args.family else ""))

@@ -145,3 +145,28 @@ class Cost(unittest.TestCase):
             glab.cmd_cost(SimpleNamespace())
         self.assertIn('known compute subtotal: ~$1.0000/hour', output.getvalue())
         self.assertIn('incomplete: no price for unknown', output.getvalue())
+
+    def test_only_running_instances_add_to_the_total(self):
+        instances = [dict(name=n, type='e2-micro', zone='example-region-a',
+                          state=state, buy='spot')
+                     for n, state in [('up', 'running'), ('going', 'stopping'),
+                                      ('down', 'terminated')]]
+        with mock.patch.object(glab, 'describe', return_value=instances), \
+                mock.patch.object(glab, 'instance_price', return_value=(1, 'live')) as price, \
+                mock.patch('sys.stdout', new_callable=io.StringIO) as output:
+            glab.cmd_cost(SimpleNamespace())
+        price.assert_called_once()
+        self.assertIn('compute estimate: ~$1.0000/hour', output.getvalue())
+
+
+class ImageWait(unittest.TestCase):
+    def test_image_create_waits_longer_than_the_default(self):
+        source = dict(state='terminated', zone='example-region-a', disks=['example-disk'])
+        with mock.patch.object(glab, 'find', return_value=source), \
+                mock.patch.object(glab, 'current_project', return_value='example-project'), \
+                mock.patch.object(glab, 'images_client'), \
+                mock.patch.object(glab, 'wait') as wait, \
+                mock.patch('sys.stdout', new_callable=io.StringIO):
+            glab.cmd_image_create(SimpleNamespace(name='example-image', source='example-box',
+                                                  family=None, description=''))
+        self.assertEqual(wait.call_args.kwargs['timeout'], glab.IMAGE_WAIT_S)
