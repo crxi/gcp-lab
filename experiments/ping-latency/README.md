@@ -72,6 +72,9 @@ come from ping's final summary. `stats_ms` contains the timing statistics.
 `no_reply_seq` records packets whose replies had not arrived at a check;
 it is not necessarily a list of permanently lost packets.
 
+The [experiments overview](../README.md#results-from-one-run) shows one
+saved run for comparison.
+
 ## Change one setting at a time
 
 Run a longer measurement:

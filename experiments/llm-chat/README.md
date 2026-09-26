@@ -182,6 +182,9 @@ streamed back to the launch process during the run, so they can be retained
 if a Spot VM is reclaimed. Failures before server setup may produce only
 terminal output, without a final result JSON.
 
+The [experiments overview](../README.md#results-from-one-run) shows one
+complete 50-turn run for comparison, and [what a run costs](../README.md#cost).
+
 ## Compare settings
 
 Disable prefix caching to compare first-token times as the conversation grows:
