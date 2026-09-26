@@ -12,6 +12,29 @@ import test_glab
 glab = test_glab.glab
 
 
+class OperationDeadline(unittest.TestCase):
+    def test_pending_operation_cannot_poll_forever(self):
+        api = mock.Mock()
+        api.wait.return_value.status = glab.compute_v1.Operation.Status.RUNNING
+        with mock.patch.object(glab, 'current_project', return_value='example-project'), \
+                mock.patch.object(glab.compute_v1, 'ZoneOperationsClient', return_value=api), \
+                mock.patch.object(glab.time, 'monotonic', side_effect=[0, 0, 601]):
+            with self.assertRaisesRegex(SystemExit, 'example-operation did not finish'):
+                glab.wait(SimpleNamespace(name='example-operation'), zone='example-zone')
+        api.wait.assert_called_once_with(project='example-project', zone='example-zone',
+                                         operation='example-operation', timeout=150, retry=None)
+
+    def test_global_wait_uses_remaining_deadline(self):
+        api = mock.Mock()
+        api.wait.return_value.status = glab.compute_v1.Operation.Status.DONE
+        api.wait.return_value.error.errors = []
+        with mock.patch.object(glab, 'current_project', return_value='example-project'), \
+                mock.patch.object(glab.compute_v1, 'GlobalOperationsClient', return_value=api), \
+                mock.patch.object(glab.time, 'monotonic', side_effect=[0, 8]):
+            glab.wait(SimpleNamespace(name='example-operation'), timeout=10)
+        self.assertEqual(api.wait.call_args.kwargs['timeout'], 2)
+
+
 class Login(unittest.TestCase):
     def test_missing_credentials_starts_both_login_commands(self):
         with mock.patch.object(glab.google.auth, 'default', side_effect=RuntimeError('missing')), \

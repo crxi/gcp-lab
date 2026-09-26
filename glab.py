@@ -170,21 +170,28 @@ def instances_client():
     return compute_v1.InstancesClient()
 
 
-def wait(operation, zone=None):
+def wait(operation, zone=None, timeout=600):
     """Block on a zone or global operation. Every mutating call returns one."""
     if operation is None:
         return
     project = current_project()
+    deadline = time.monotonic() + timeout
     # operations.wait returns after about two minutes whether or not the
     # operation is done, so call it again until it is. A stop can take longer.
     while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            die(f"operation {operation.name} did not finish within {timeout}s; "
+                "it may still be running. Check `glab list --all-zones`.")
         if zone:
             client = compute_v1.ZoneOperationsClient()
             result = client.wait(project=project, zone=zone,
-                                 operation=operation.name)
+                                 operation=operation.name,
+                                 timeout=min(150, remaining), retry=None)
         else:
             client = compute_v1.GlobalOperationsClient()
-            result = client.wait(project=project, operation=operation.name)
+            result = client.wait(project=project, operation=operation.name,
+                                 timeout=min(150, remaining), retry=None)
         if result.status == compute_v1.Operation.Status.DONE:
             break
     if result.error and result.error.errors:
