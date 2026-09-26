@@ -86,9 +86,24 @@ class Metrics(unittest.TestCase):
         self.assertNotIn("vllm:kv_cache_usage_perc", m)
         self.assertNotIn("process_cpu_seconds_total", m)
 
-    def test_delta_keeps_only_changes(self):
+    def test_delta_keeps_measured_zeros(self):
         self.assertEqual(client.delta({"a": 1.0, "b": 2.0}, {"a": 1.0, "b": 5.0}),
-                         {"b": 3.0})
+                         {"a": 0.0, "b": 3.0})
+
+    def test_missing_baseline_is_not_treated_as_zero(self):
+        self.assertEqual(client.delta({}, {"a": 5.0}), {})
+
+    def test_cache_miss_is_zero_hits_not_missing_hits(self):
+        metrics = client.delta({"prefix_cache_hits_total": 0,
+                                "prefix_cache_queries_total": 0},
+                               {"prefix_cache_hits_total": 0,
+                                "prefix_cache_queries_total": 40})
+        hits = client.pick(metrics, "prefix_cache_hits_total")
+        queries = client.pick(metrics, "prefix_cache_queries_total")
+        self.assertEqual(hits / queries, 0)
+
+    def test_short_sample_p99_uses_ceiling_rank(self):
+        self.assertEqual(client.percentile([1, 2, 100], 99), 100)
 
 
 class Stream(unittest.TestCase):
@@ -116,6 +131,32 @@ class Stream(unittest.TestCase):
         sent = json.loads(conn.request.call_args.args[2])
         self.assertEqual(sent["temperature"], 0)
         self.assertTrue(sent["stream_options"]["include_usage"])
+
+    def test_missing_usage_does_not_count_chunks_as_tokens(self):
+        response = mock.MagicMock(status=200)
+        chunk = {"choices": [{"delta": {"content": "several tokens"},
+                               "finish_reason": "stop"}]}
+        response.__iter__.return_value = iter([
+            f"data: {json.dumps(chunk)}\n".encode(), b"data: [DONE]\n"])
+        conn = mock.MagicMock()
+        conn.getresponse.return_value = response
+        with mock.patch.object(client.http.client, "HTTPConnection", return_value=conn):
+            _, timing = client.ask("h", "m", [], 10, 0, 0)
+        self.assertEqual(timing["chunks"], 1)
+        self.assertIsNone(timing["completion_tokens"])
+        self.assertIsNone(timing["decode_tok_s"])
+        conn.close.assert_called_once()
+
+    def test_truncated_stream_is_not_a_finished_turn(self):
+        response = mock.MagicMock(status=200)
+        chunk = {"choices": [{"delta": {"content": "partial"}}]}
+        response.__iter__.return_value = iter([f"data: {json.dumps(chunk)}\n".encode()])
+        conn = mock.MagicMock()
+        conn.getresponse.return_value = response
+        with mock.patch.object(client.http.client, "HTTPConnection", return_value=conn):
+            with self.assertRaisesRegex(RuntimeError, "finish marker"):
+                client.ask("h", "m", [], 10, 0, 0)
+        conn.close.assert_called_once()
 
 
 class Summary(unittest.TestCase):

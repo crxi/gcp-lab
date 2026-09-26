@@ -26,6 +26,7 @@ import time
 from datetime import datetime, timezone
 
 import common
+from client import percentile
 from common import (CLIENT_DISK_GB, CLIENT_TYPE, FAMILY, GPU_DISK_GB,
                     GPU_SAMPLE_S, GPU_TYPE, HERE, MAX_MODEL_LEN, MAX_RUN_MIN,
                     MAX_TOKENS,
@@ -72,15 +73,6 @@ def drop_port_rule():
         pass
     except Exception as e:
         log(f"could not delete {PORT_RULE}: {e}")
-
-
-def percentile(values, p):
-    """Nearest-rank percentile of unsorted values; None for an empty list."""
-    values = sorted(v for v in values if v is not None)
-    if not values:
-        return None
-    k = -(-p * len(values) // 100) - 1
-    return values[max(0, min(len(values) - 1, int(k)))]
 
 
 def pick(d, suffix):
@@ -135,12 +127,18 @@ def summarize(turns, gpu, start, end):
                         "p90": percentile(values, 90),
                         "min": min(values), "max": max(values),
                         "mean": round(statistics.mean(values), 3)}
-    hits = sum(pick(t.get("server"), "prefix_cache_hits_total") or 0 for t in turns)
-    queries = sum(pick(t.get("server"), "prefix_cache_queries_total") or 0
-                  for t in turns)
-    out["prefix_hit_rate"] = round(hits / queries, 4) if queries else None
+    cache = [(pick(t.get("server"), "prefix_cache_hits_total"),
+              pick(t.get("server"), "prefix_cache_queries_total")) for t in turns]
+    if cache and all(h is not None and q is not None for h, q in cache):
+        hits = sum(h for h, _ in cache)
+        queries = sum(q for _, q in cache)
+        out["prefix_hit_rate"] = round(hits / queries, 4) if queries else None
+    else:
+        out["prefix_hit_rate"] = None
     out["prompt_tokens_last"] = turns[-1].get("prompt_tokens") if turns else None
-    out["completion_tokens"] = sum(t.get("completion_tokens") or 0 for t in turns)
+    counts = [t.get("completion_tokens") for t in turns]
+    out["completion_tokens"] = (sum(counts) if all(n is not None for n in counts)
+                                else None)
     out["session_s"] = round(end - start, 1) if turns else None
 
     during = [g for g in gpu if start <= g["timestamp"] <= end]
@@ -181,7 +179,7 @@ def report(result):
               f"{statistics.median(tcp):.3f} ms over {len(tcp)}")
     turns = result.get("turns", [])
     print(f"  {len(turns)}/{result['questions']} turns, "
-          f"{s.get('completion_tokens', 0)} tokens generated, context reached "
+          f"{fmt(s.get('completion_tokens'), 'd')} tokens generated, context reached "
           f"{s.get('prompt_tokens_last')} tokens, session "
           f"{fmt(s.get('session_s'), '.0f')}s"
           + ("" if result["complete"] else f"  INCOMPLETE: {result.get('incomplete')}"))
@@ -191,11 +189,11 @@ def report(result):
     print(f"  {'':34}{'p50':>9}{'p90':>9}{'min':>9}{'max':>9}")
     for key, label in [("ttft_ms", "time to first token, client (ms)"),
                        ("server_ttft_ms", "time to first token, server (ms)"),
-                       ("ttft_overhead_ms", "  difference: network + HTTP (ms)"),
+                       ("ttft_overhead_ms", "  client minus server TTFT (ms)"),
                        ("server_prefill_ms", "prefill, server (ms)"),
                        ("server_queue_ms", "queue, server (ms)"),
                        ("decode_tok_s", "decode rate (tokens/s)"),
-                       ("gap_ms_p99", "p99 gap between tokens (ms)"),
+                       ("gap_ms_p99", "p99 gap between chunks (ms)"),
                        ("total_ms", "whole answer (ms)")]:
         if key in s:
             x = s[key]

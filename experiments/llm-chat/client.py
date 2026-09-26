@@ -14,6 +14,7 @@ writes one JSON line, and prints one progress line.
 import argparse
 import http.client
 import json
+import math
 import re
 import socket
 import statistics
@@ -87,8 +88,17 @@ def scrape(host):
 
 
 def delta(before, after):
-    return {k: round(after[k] - before.get(k, 0.0), 6) for k in after
-            if after[k] != before.get(k, 0.0)}
+    # An unchanged counter is a measured zero, not a missing measurement.
+    return {k: round(after[k] - before[k], 6) for k in after if k in before}
+
+
+def percentile(values, p):
+    """Nearest-rank percentile, ignoring missing values."""
+    values = sorted(v for v in values if v is not None)
+    if not values:
+        return None
+    rank = math.ceil(p * len(values) / 100) - 1
+    return values[max(0, min(len(values) - 1, rank))]
 
 
 def ask(host, model, messages, max_tokens, temperature, seed):
@@ -100,32 +110,40 @@ def ask(host, model, messages, max_tokens, temperature, seed):
     })
     conn = http.client.HTTPConnection(host, PORT, timeout=600)
     t0 = time.perf_counter()
-    conn.request("POST", "/v1/chat/completions", body,
-                 {"Content-Type": "application/json"})
-    r = conn.getresponse()
-    if r.status != 200:
-        raise RuntimeError(f"HTTP {r.status}: {r.read().decode()[:500]}")
-    headers_at = time.perf_counter()
-    arrivals, text, usage, finish = [], [], None, None
-    for raw in r:
-        line = raw.decode().strip()
-        if not line.startswith("data: "):
-            continue
-        data = line[len("data: "):]
-        if data == "[DONE]":
-            break
-        chunk = json.loads(data)
-        usage = chunk.get("usage") or usage
-        for choice in chunk.get("choices", []):
-            piece = (choice.get("delta") or {}).get("content")
-            if piece:
-                arrivals.append(time.perf_counter())
-                text.append(piece)
-            finish = choice.get("finish_reason") or finish
-    done = time.perf_counter()
-    conn.close()
+    try:
+        conn.request("POST", "/v1/chat/completions", body,
+                     {"Content-Type": "application/json"})
+        r = conn.getresponse()
+        if r.status != 200:
+            raise RuntimeError(f"HTTP {r.status}: {r.read().decode()[:500]}")
+        headers_at = time.perf_counter()
+        arrivals, text, usage, finish = [], [], None, None
+        complete = False
+        for raw in r:
+            line = raw.decode().strip()
+            if not line.startswith("data: "):
+                continue
+            data = line[len("data: "):]
+            if data == "[DONE]":
+                complete = True
+                break
+            chunk = json.loads(data)
+            usage = chunk.get("usage") or usage
+            for choice in chunk.get("choices", []):
+                piece = (choice.get("delta") or {}).get("content")
+                if piece:
+                    arrivals.append(time.perf_counter())
+                    text.append(piece)
+                finish = choice.get("finish_reason") or finish
+        if not complete or finish is None:
+            raise RuntimeError("completion stream ended before its finish marker")
+        done = time.perf_counter()
+    finally:
+        conn.close()
     gaps = [(b - a) * 1000 for a, b in zip(arrivals, arrivals[1:])]
-    completion = (usage or {}).get("completion_tokens") or len(arrivals)
+    # A content chunk can contain multiple tokens. Without server usage,
+    # neither token count nor token throughput is known.
+    completion = (usage or {}).get("completion_tokens")
     decode_s = arrivals[-1] - arrivals[0] if len(arrivals) > 1 else None
     return "".join(text), {
         "ttft_ms": round((arrivals[0] - t0) * 1000, 2) if arrivals else None,
@@ -135,9 +153,9 @@ def ask(host, model, messages, max_tokens, temperature, seed):
         "completion_tokens": completion,
         "chunks": len(arrivals),
         "decode_tok_s": (round((completion - 1) / decode_s, 2)
-                         if decode_s else None),
+                         if decode_s and completion is not None else None),
         "gap_ms_mean": round(statistics.mean(gaps), 3) if gaps else None,
-        "gap_ms_p99": (round(sorted(gaps)[max(0, int(len(gaps) * 0.99) - 1)], 3)
+        "gap_ms_p99": (round(percentile(gaps, 99), 3)
                        if gaps else None),
         "gap_ms_max": round(max(gaps), 3) if gaps else None,
         "finish_reason": finish,
@@ -205,9 +223,13 @@ def main():
                          **t, "server": server})
             hit = (f"{t['prefix_hit_rate'] * 100:3.0f}%"
                    if t["prefix_hit_rate"] is not None else "  -")
-            say(f"TURN {n:2d}/{len(questions)}  context {t['prompt_tokens']:5d} tok  "
-                f"ttft {t['ttft_ms']:7.1f} ms  total {t['total_ms'] / 1000:5.1f} s  "
-                f"{t['completion_tokens']:3d} tok at {t['decode_tok_s'] or 0:5.1f} tok/s  "
+            prompt = str(t['prompt_tokens']) if t['prompt_tokens'] is not None else '-'
+            completion = str(t['completion_tokens']) if t['completion_tokens'] is not None else '-'
+            ttft = f"{t['ttft_ms']:.1f}" if t['ttft_ms'] is not None else '-'
+            rate = f"{t['decode_tok_s']:.1f}" if t['decode_tok_s'] is not None else '-'
+            say(f"TURN {n:2d}/{len(questions)}  context {prompt:>5} tok  "
+                f"ttft {ttft:>7} ms  total {t['total_ms'] / 1000:5.1f} s  "
+                f"{completion:>3} tok at {rate:>5} tok/s  "
                 f"cache hit {hit}")
     say("DONE")
 
