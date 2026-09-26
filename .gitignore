@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 .venv/
+# raw per-run files (vLLM log, GPU csv); the result JSON holds the data
+experiments/*/results/*-work/
