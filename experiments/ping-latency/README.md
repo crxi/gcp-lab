@@ -26,7 +26,8 @@ Timestamped lines for each phase, then a line every 5 seconds while ping runs:
 ```
 
 At the end, the reply count and loss, min/p50/p90/p99/max/mean/stdev, a text
-histogram of the RTTs, and the path of the result JSON. The JSON holds every
+histogram of the RTTs, and the path of the result JSON, then
+the output of `glab list --all-zones`. The JSON holds every
 RTT (`rtts_ms`), the sequence numbers that got no reply (`no_reply_seq`), and
 the same summary.
 
@@ -42,7 +43,11 @@ the same summary.
    there because ping block-buffers into a pipe; `-O` reports a missing reply
    when it happens.
 5. Writes every RTT and the summary to the result JSON.
-6. Deletes both instances together, then the ICMP rule, in a `finally`.
+6. Deletes both instances together, then the ICMP rule, in a `finally`. If
+   that never runs, Compute Engine deletes the instances itself
+   `MAX_RUN_MIN` (in `run.py`) plus the ping time after they start.
+7. Prints `glab list --all-zones` as its last output, so the end of the run
+   shows whether anything is left.
 
 ## The firewall rule
 

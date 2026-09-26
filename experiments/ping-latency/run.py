@@ -42,6 +42,10 @@ RESULTS = os.path.join(HERE, "results")
 ICMP_RULE = "lab-ping-test-icmp"
 DEFAULT_TYPE = "e2-micro"
 REPORT_EVERY = 5  # seconds between progress lines while pinging
+# Compute Engine deletes each instance this many minutes after it starts,
+# plus the ping time, so nothing bills on if this machine goes away mid-run.
+# A 60 s run took under 3 minutes end to end (2026-09-25).
+MAX_RUN_MIN = 20
 
 REPLY = re.compile(r"icmp_seq=(\d+) ttl=\d+ time=([\d.]+) ms")
 NO_REPLY = re.compile(r"no answer yet for icmp_seq=(\d+)")
@@ -206,6 +210,16 @@ def teardown(placed, keep):
     drop_icmp_rule()
 
 
+def show_leftovers():
+    """Print `glab list --all-zones`, so the end of every run shows whether
+    anything is still billing."""
+    print("\n$ glab list --all-zones", flush=True)
+    try:
+        glab.cmd_list(SimpleNamespace(all_zones=True, region=None))
+    except BaseException as e:
+        print(f"could not list instances: {e}. run `glab list --all-zones`.")
+
+
 def report(result):
     rtts = sorted(result.get("rtts_ms", []))
     print()
@@ -283,7 +297,8 @@ def main():
             quietly(glab.cmd_init, SimpleNamespace(
                 name=name, type=args.type, disk=args.disk,
                 disk_type="pd-balanced", gpu=args.gpu, image=None,
-                spot=not args.on_demand, public_ip=False))
+                spot=not args.on_demand, public_ip=False,
+                max_run=MAX_RUN_MIN + args.seconds // 60 + 1))
 
         found = {}
         for name, zone in placed:
@@ -344,6 +359,7 @@ def main():
             report(result)
             print(f"\n{result['elapsed_s']:.0f}s total. every rtt is in "
                   f"{os.path.relpath(path, os.getcwd())}")
+        show_leftovers()
 
 
 if __name__ == "__main__":
