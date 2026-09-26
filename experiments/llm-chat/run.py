@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import statistics
 import subprocess
 import time
@@ -345,12 +346,15 @@ def main():
                 f"--host 0.0.0.0 --port {PORT} --max-model-len {MAX_MODEL_LEN} "
                 f"--seed {SEED}"
                 + (" --no-enable-prefix-caching" if args.no_prefix_cache else ""))
-        gpulog = (f"nvidia-smi --query-gpu={','.join(GPU_FIELDS)} "
-                  f"--format=csv,noheader,nounits -l {GPU_SAMPLE_S} -f /tmp/gpu.csv")
+        gpulog = (f"stdbuf -oL nvidia-smi --query-gpu={','.join(GPU_FIELDS)} "
+                  f"--format=csv,noheader,nounits -l {GPU_SAMPLE_S} > /tmp/gpu.csv")
         # systemd-run detaches both from the ssh session and keeps their
         # output in the journal. VLLM_ENV is explained in common.py.
         setenv = " ".join(f"--setenv={k}={v}" for k, v in VLLM_ENV.items())
-        launch = (f"sudo systemd-run --quiet --unit gpulog {gpulog} && "
+        # Write line-buffered stdout: nvidia-smi -f buffers its file and can
+        # leave the newest samples out of the copy collected after a short run.
+        launch = (f"sudo systemd-run --quiet --unit gpulog /bin/sh -c "
+                  f"{shlex.quote(gpulog)} && "
                   f"sudo systemd-run --quiet --unit vllm {setenv} {vllm}")
         log(f"on {SERVER}: {vllm}")
         r = ssh(SERVER, zone, launch, capture_output=True, text=True)
