@@ -58,8 +58,13 @@ What the first runs showed, kept because each failed quietly or late:
 - vLLM 0.30.0 on the Ubuntu accelerator image needs `build-essential` and
   `python3-dev` (Triton compiles at start), and FlashInfer's sampler needs
   nvcc, which the image lacks; `VLLM_USE_FLASHINFER_SAMPLER=0` avoids it.
-- `init` and `cost` read only the `PRICES` and `SPOT_PRICES` fallback tables,
-  not the catalog. The tables matched the catalog on 2026-09-25.
+- `init` and `cost` now read regional catalog prices, including attached GPUs.
+  Fallback tables are used only for machines without explicit accelerators in
+  asia-southeast1. Unknown prices make the compute subtotal incomplete.
+  Login refresh, forced price refresh, a cached read, and an N1-plus-T4
+  catalog estimate were checked against the project on 2026-09-26.
+- GPU maintenance settings are checked using real SDK message serialization
+  with mocked API calls; an N1 GPU launch is still unverified.
 
 Pricing, where each mistake gave a plausible wrong number rather than an
 error:

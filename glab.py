@@ -33,7 +33,7 @@ try:
     from google.cloud import compute_v1
     from google.api_core.exceptions import GoogleAPICallError, NotFound
     import google.auth
-    from google.auth.transport.requests import AuthorizedSession
+    from google.auth.transport.requests import AuthorizedSession, Request
 except ImportError:
     sys.exit("missing dependencies. run ./setup.sh, or:\n"
              "  pip install google-cloud-compute google-auth")
@@ -222,6 +222,9 @@ def describe(zone=None):
             "buy": ("spot" if i.scheduling
                     and i.scheduling.provisioning_model == "SPOT" else "on-demand"),
             "gpus": sum(a.accelerator_count for a in (i.guest_accelerators or [])),
+            "accelerators": [(a.accelerator_type.rsplit("/", 1)[-1],
+                              a.accelerator_count)
+                             for a in (i.guest_accelerators or [])],
             "disks": [d.source.rsplit("/", 1)[-1]
                       for d in i.disks if getattr(d, "source", None)],
         })
@@ -397,7 +400,7 @@ def machine_price(machine_type, region, spot=False):
     return price
 
 
-def region_prices(region, names, spot=False):
+def region_prices(region, names, spot=False, refresh=False):
     """{type: price or None}, cached on disk for a month."""
     names = sorted(names)
     key = f"{region}:{'spot' if spot else 'ondemand'}"
@@ -407,7 +410,10 @@ def region_prices(region, names, spot=False):
     except (OSError, ValueError):
         cache = {}
     entry = cache.get(key) or {}
-    fresh = time.time() - entry.get("fetched", 0) < PRICE_CACHE_DAYS * 86400
+    fresh = (not refresh and
+             time.time() - entry.get("fetched", 0) < PRICE_CACHE_DAYS * 86400)
+    if not fresh:
+        compute_skus.cache_clear()
     known = entry.get("prices", {}) if fresh else {}
     missing = [n for n in names if n not in known]
     if not missing:
@@ -419,11 +425,36 @@ def region_prices(region, names, spot=False):
         for future in as_completed(futures):
             prices[futures[future]] = future.result()
 
-    cache[key] = {"fetched": entry.get("fetched") or time.time(), "prices": prices}
+    cache[key] = {"fetched": entry["fetched"] if fresh else time.time(),
+                  "prices": prices}
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(PRICE_CACHE_PATH, "w") as f:
         json.dump(cache, f, indent=2)
     return {n: prices[n] for n in names}, "live"
+
+
+def instance_price(machine_type, zone, spot=False, accelerators=()):
+    """Regional compute estimate, including attached GPUs; None if incomplete."""
+    region = current_region(zone)
+    try:
+        prices, source = region_prices(region, [machine_type], spot=spot)
+        price = prices[machine_type]
+        if price is None:
+            return None, source
+        # Built-in GPUs are already included by machine_price. N1 attachments
+        # are instance properties and must be added separately.
+        if accelerators and not zone_catalog(zone).get(machine_type, {}).get("gpus"):
+            for model, count in accelerators:
+                each = gpu_price(model, region, spot)
+                if each is None:
+                    return None, source
+                price += each * count
+        return price, source
+    except Exception:
+        # These tables cover one region and do not price attached GPUs.
+        if region == "asia-southeast1" and not accelerators:
+            return (SPOT_PRICES if spot else PRICES).get(machine_type), "fallback"
+        return None, "unavailable"
 
 
 # ---------------------------------------------------------------- shared setup
@@ -462,17 +493,18 @@ def ensure_firewall():
 # ---------------------------------------------------------------- commands
 
 def cmd_login(args):
+    credentials.cache_clear()
     try:
-        cmd_whoami(args)
-        return
-    except SystemExit:
-        raise
+        creds, _ = google.auth.default()
+        creds.refresh(Request())
     except Exception:
-        pass
-    print("no usable credentials. running `gcloud auth login`...")
-    if subprocess.run(["gcloud", "auth", "login"]).returncode != 0:
-        sys.exit(1)
-    subprocess.run(["gcloud", "auth", "application-default", "login"])
+        print("no usable credentials. running `gcloud auth login`...")
+        for command in (["gcloud", "auth", "login"],
+                        ["gcloud", "auth", "application-default", "login"]):
+            result = subprocess.run(command)
+            if result.returncode:
+                sys.exit(result.returncode)
+        credentials.cache_clear()
     cmd_whoami(args)
 
 
@@ -538,7 +570,8 @@ def cmd_types(args):
                        for sizes in families.values())
 
     try:
-        prices, source = region_prices(region, cpu + shown, spot=args.spot)
+        prices, source = region_prices(region, cpu + shown, spot=args.spot,
+                                       refresh=args.no_cache)
     except Exception as e:
         print(f"could not read the Billing Catalog ({type(e).__name__}); "
               f"showing the built-in table instead\n")
@@ -654,6 +687,8 @@ def cmd_init(args):
     )
 
     scheduling = compute_v1.Scheduling()
+    if args.gpu or zone_catalog(zone).get(args.type, {}).get("gpus"):
+        scheduling.on_host_maintenance = "TERMINATE"
     if args.spot:
         # STOP rather than DELETE, so `glab start` can bring it back the way
         # `lab start` does with a persistent EC2 spot request.
@@ -693,19 +728,20 @@ def cmd_init(args):
         instance.guest_accelerators = [compute_v1.AcceleratorConfig(
             accelerator_type=f"zones/{zone}/acceleratorTypes/{model}",
             accelerator_count=int(count or 1))]
-        # A GPU cannot live-migrate, so the host maintenance policy has to say
-        # so or the insert is rejected.
-        scheduling.on_host_maintenance = "TERMINATE"
 
     op = instances_client().insert(project=project, zone=zone,
                                    instance_resource=instance)
     wait(op, zone)
     print(f"{name}: {args.type} starting in {zone}")
-    price = (SPOT_PRICES if args.spot else PRICES).get(args.type)
+    attached = [(model, int(count or 1))] if args.gpu else []
+    price, source = instance_price(args.type, zone, args.spot, attached)
     if max_run:
         print(f"deleted by Compute Engine {max_run} minutes after it starts")
     if price:
-        print(f"cost if left running: ~${price:.4f}/hour plus disk")
+        print(f"compute estimate: ~${price:.4f}/hour ({source}); "
+              "disk, external IP and network usage are extra")
+    else:
+        print("compute estimate unavailable for this configuration")
     print(f"\nwait a minute, then: glab run {name} 'uname -a'")
 
 
@@ -816,19 +852,27 @@ def cmd_cost(args):
     if not found:
         print(f"nothing running in {current_zone()}")
         return
-    rows, hourly = [], 0.0
+    rows, hourly, unknown = [], 0.0, []
     for i in found:
-        table_ = SPOT_PRICES if i["buy"] == "spot" else PRICES
-        price = table_.get(i["type"])
-        if i["state"] == "running" and price:
-            hourly += price
+        price, source = (0.0, "stopped") if i["state"] == "terminated" else \
+            instance_price(i["type"], i["zone"], i["buy"] == "spot",
+                           i.get("accelerators", []))
+        if i["state"] != "terminated":
+            if price is None:
+                unknown.append(i["name"])
+            else:
+                hourly += price
         rows.append([i["name"], i["type"], i["state"], i["buy"],
-                     f"${price:.4f}" if price else "?"])
-    table(rows, ["name", "type", "state", "buy", "per hour"])
-    print(f"\ncompute: ~${hourly:.4f}/hour, ${hourly * 24:.2f}/day")
+                     f"${price:.4f}" if price is not None else "?", source])
+    table(rows, ["name", "type", "state", "buy", "per hour", "source"])
+    label = "known compute subtotal" if unknown else "compute estimate"
+    print(f"\n{label}: ~${hourly:.4f}/hour, ${hourly * 24:.2f}/day")
+    if unknown:
+        print(f"incomplete: no price for {', '.join(unknown)}")
     print("disks bill whether the instance runs or not; "
           "`glab list` shows what exists.")
-    print("prices are the built-in table, not this project's billing account.")
+    print("disk, external IP and network usage are excluded; "
+          "estimates are not this project's bill.")
 
 
 def cmd_destroy(args):

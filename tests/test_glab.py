@@ -42,6 +42,7 @@ def stub_google():
     transport = types.ModuleType("google.auth.transport")
     requests_mod = types.ModuleType("google.auth.transport.requests")
     requests_mod.AuthorizedSession = mock.MagicMock()
+    requests_mod.Request = mock.MagicMock()
 
     google.cloud = cloud
     google.auth = auth
@@ -304,6 +305,8 @@ class Spot(unittest.TestCase):
                                   return_value="asia-southeast1-b"), \
                 mock.patch.object(glab, "current_project", return_value="p"), \
                 mock.patch.object(glab, "ensure_firewall"), \
+                mock.patch.object(glab, "zone_catalog", return_value={}), \
+                mock.patch.object(glab, "instance_price", return_value=(None, "unavailable")), \
                 mock.patch.object(glab, "instances_client", return_value=client), \
                 mock.patch.object(glab.compute_v1, "Scheduling",
                                   return_value=scheduling), \
@@ -324,6 +327,8 @@ class Spot(unittest.TestCase):
                                   return_value="asia-southeast1-b"), \
                 mock.patch.object(glab, "current_project", return_value="p"), \
                 mock.patch.object(glab, "ensure_firewall"), \
+                mock.patch.object(glab, "zone_catalog", return_value={}), \
+                mock.patch.object(glab, "instance_price", return_value=(None, "unavailable")), \
                 mock.patch.object(glab, "instances_client", return_value=client), \
                 mock.patch.object(glab.compute_v1, "Scheduling",
                                   return_value=scheduling), \
@@ -510,6 +515,8 @@ class MaxRun(unittest.TestCase):
                 mock.patch.object(glab, "current_zone", return_value="z"), \
                 mock.patch.object(glab, "current_project", return_value="p"), \
                 mock.patch.object(glab, "ensure_firewall"), \
+                mock.patch.object(glab, "zone_catalog", return_value={}), \
+                mock.patch.object(glab, "instance_price", return_value=(None, "unavailable")), \
                 mock.patch.object(glab, "wait"), \
                 mock.patch.object(glab, "instances_client", return_value=client), \
                 mock.patch("sys.stdout", new_callable=io.StringIO):
