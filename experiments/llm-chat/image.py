@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 
 from common import (BASE_IMAGE, BUILD_MAX_RUN_MIN, BUILD_PUBLIC_IP,
@@ -40,12 +41,15 @@ def build(zone, spot=BUILD_SPOT, disk=GPU_DISK_GB, vllm_version=VLLM_VERSION,
     log_path = os.path.join(RESULTS, f"build-{name}.log")
     versions = None
     keep_builder = created = False
+    run_id = uuid.uuid4().hex
+    placed = []
     try:
         log(f"creating {BUILDER}: {GPU_TYPE} {'spot' if spot else 'on-demand'}, "
             f"{disk}GB, external ip for the build only, deleted by Compute "
             f"Engine after {BUILD_MAX_RUN_MIN} min at most")
         zone = create_gpu(BUILDER, zone, GPU_TYPE, disk, spot, BUILD_MAX_RUN_MIN,
-                          image=BASE_IMAGE, public_ip=BUILD_PUBLIC_IP)
+                          image=BASE_IMAGE, public_ip=BUILD_PUBLIC_IP,
+                          run_id=run_id, placed=placed)
         created = True
         wait_running(BUILDER)
         log("waiting for ssh")
@@ -71,8 +75,11 @@ def build(zone, spot=BUILD_SPOT, disk=GPU_DISK_GB, vllm_version=VLLM_VERSION,
                 versions = json.loads(line[len("VERSIONS "):])
         # Remove the builder's ssh host keys and cloud-init state, so each
         # instance made from the image generates its own.
-        ssh(BUILDER, zone, "sudo cloud-init clean --logs --machine-id "
-            "&& sudo rm -f /etc/ssh/ssh_host_*", capture_output=True)
+        cleaned = ssh(BUILDER, zone, "sudo cloud-init clean --logs --machine-id "
+                      "&& sudo rm -f /etc/ssh/ssh_host_*",
+                      capture_output=True, text=True)
+        if cleaned.returncode:
+            glab.die(f"could not clean builder identity: {cleaned.stderr}")
         log(f"stopping {BUILDER}")
         glab.cmd_stop(argparse.Namespace(name=BUILDER))
         description = json.dumps(versions or {"model": MODEL})[:2048]
@@ -87,7 +94,7 @@ def build(zone, spot=BUILD_SPOT, disk=GPU_DISK_GB, vllm_version=VLLM_VERSION,
         raise
     finally:
         if not keep_builder:
-            delete_instances([(BUILDER, zone)])
+            delete_instances(placed, run_id)
         glab.write_config(zone=zone)
     log(f"image {name} built in {(time.time() - started) / 60:.0f} min, "
         f"versions {versions}")

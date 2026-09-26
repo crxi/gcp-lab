@@ -669,13 +669,16 @@ def cmd_init(args):
         scheduling.max_run_duration = compute_v1.Duration(seconds=max_run * 60)
         scheduling.instance_termination_action = "DELETE"
 
+    labels = {LABEL_KEY: "1"}
+    if getattr(args, "run_id", None):
+        labels["lab-run"] = args.run_id
     instance = compute_v1.Instance(
         name=name,
         machine_type=f"zones/{zone}/machineTypes/{args.type}",
         disks=[disk],
         network_interfaces=[nic],
         scheduling=scheduling,
-        labels={LABEL_KEY: "1"},
+        labels=labels,
         tags=compute_v1.Tags(items=[NETWORK_TAG]),
         # OS Login means SSH keys come from IAM, not from project metadata, so
         # nothing here creates or stores a keypair.

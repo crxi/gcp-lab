@@ -23,6 +23,7 @@ import os
 import statistics
 import subprocess
 import time
+import uuid
 from datetime import datetime, timezone
 
 import common
@@ -41,37 +42,37 @@ GPU_FIELDS = ["timestamp", "utilization.gpu", "utilization.memory",
               "memory.used", "power.draw", "temperature.gpu", "clocks.sm"]
 
 
-def port_rule():
+def port_rule(name):
     """Allow the chat port from lab instances to lab instances. The source is
     the network tag, not an address range, so nothing outside the VPC is let
     in."""
     client = compute_v1.FirewallsClient()
     project = glab.current_project()
     try:
-        client.get(project=project, firewall=PORT_RULE)
+        client.get(project=project, firewall=name)
         return
     except NotFound:
         pass
     rule = compute_v1.Firewall(
-        name=PORT_RULE,
+        name=name,
         description="llm-chat: vLLM port between lab instances",
         network="global/networks/default", direction="INGRESS",
         source_tags=[glab.NETWORK_TAG], target_tags=[glab.NETWORK_TAG],
         allowed=[compute_v1.Allowed(I_p_protocol="tcp", ports=[str(PORT)])],
     )
     glab.wait(client.insert(project=project, firewall_resource=rule))
-    log(f"created firewall rule {PORT_RULE} (tcp:{PORT}, lab -> lab)")
+    log(f"created firewall rule {name} (tcp:{PORT}, lab -> lab)")
 
 
-def drop_port_rule():
+def drop_port_rule(name):
     try:
         glab.wait(compute_v1.FirewallsClient().delete(
-            project=glab.current_project(), firewall=PORT_RULE))
-        log(f"deleted firewall rule {PORT_RULE}")
+            project=glab.current_project(), firewall=name))
+        log(f"deleted firewall rule {name}")
     except NotFound:
         pass
     except Exception as e:
-        log(f"could not delete {PORT_RULE}: {e}")
+        log(f"could not delete {name}: {e}")
 
 
 def percentile(values, p):
@@ -299,7 +300,9 @@ def main():
         f"if nothing else does")
 
     started = time.time()
-    placed = [(SERVER, zone), (CLIENT, zone)]
+    run_id = uuid.uuid4().hex
+    rule_name = f"{PORT_RULE}-{run_id[:12]}"
+    placed = []
     result = {
         "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "zone": zone, "image": image.name, "spot": spot,
@@ -319,14 +322,16 @@ def main():
     running_at = ssh_at = launched_at = None
 
     try:
-        port_rule()
+        port_rule(rule_name)
         log(f"creating {SERVER} ({GPU_TYPE}) from {image.name}")
         zone = create_gpu(SERVER, zone, GPU_TYPE, GPU_DISK_GB, spot,
-                          MAX_RUN_MIN, image=image.name)
-        placed[:] = [(SERVER, zone), (CLIENT, zone)]
+                          MAX_RUN_MIN, image=image.name,
+                          run_id=run_id, placed=placed)
         result["zone"] = zone
         log(f"creating {CLIENT} ({CLIENT_TYPE})")
-        create(CLIENT, zone, CLIENT_TYPE, CLIENT_DISK_GB, spot, MAX_RUN_MIN)
+        placed.append((CLIENT, zone))
+        create(CLIENT, zone, CLIENT_TYPE, CLIENT_DISK_GB, spot, MAX_RUN_MIN,
+               run_id=run_id)
 
         server = wait_running(SERVER)
         running_at = time.time()
@@ -420,10 +425,10 @@ def main():
         if args.keep:
             log(f"--keep: {SERVER} and {CLIENT} left running until Compute "
                 f"Engine deletes them, {MAX_RUN_MIN} min after they started. "
-                f"`glab destroy --all` sooner, and delete firewall rule {PORT_RULE}.")
+                f"`glab destroy --all` sooner, and delete firewall rule {rule_name}.")
         else:
-            delete_instances(placed)
-            drop_port_rule()
+            delete_instances(placed, run_id)
+            drop_port_rule(rule_name)
         glab.write_config(zone=zone)
         result["elapsed_s"] = round(time.time() - started, 1)
         if result.get("versions"):

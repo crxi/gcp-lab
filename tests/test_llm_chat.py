@@ -67,6 +67,53 @@ class Zones(unittest.TestCase):
                 common.create_gpu("s", "asia-southeast1-c", "g2", 40, True, 45)
 
 
+class Ownership(unittest.TestCase):
+    def test_delete_requires_both_lab_and_current_run_labels(self):
+        for labels in ({}, {"lab": "1"}, {"lab": "1", "lab-run": "old"},
+                       {"lab-run": "current"},
+                       {"lab": "1", "lab-run": "current"}):
+            with self.subTest(labels=labels):
+                api = mock.Mock()
+                api.get.return_value.labels = labels
+                with mock.patch.object(common.glab, "instances_client", return_value=api), \
+                        mock.patch.object(common.glab, "current_project", return_value="p"), \
+                        mock.patch.object(common.glab, "wait"), \
+                        mock.patch.object(common, "log"):
+                    common.delete_instances([("llm-build", "z")], "current")
+                self.assertEqual(api.delete.call_count,
+                                 int(labels == {"lab": "1", "lab-run": "current"}))
+
+    def test_failed_fallback_attempts_remain_available_for_cleanup(self):
+        placed = []
+        with mock.patch.object(common, "create", side_effect=SystemExit(
+                "does not have enough resources")), mock.patch.object(common, "log"):
+            with self.assertRaises(SystemExit):
+                common.create_gpu("s", common.ZONES[0], "g2", 40, True, 45,
+                                  run_id="current", placed=placed)
+        self.assertEqual(placed, [("s", z) for z in common.ZONES])
+
+    def test_failed_identity_cleanup_prevents_image_creation(self):
+        import tempfile
+        builder = load("llm_chat_image", "image.py")
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(builder, "RESULTS", directory), \
+                mock.patch.object(builder, "create_gpu", return_value="z"), \
+                mock.patch.object(builder, "wait_running"), \
+                mock.patch.object(builder, "wait_ssh"), \
+                mock.patch.object(builder, "scp_to", return_value=mock.Mock(returncode=0)), \
+                mock.patch.object(builder, "stream", return_value=(0, "")), \
+                mock.patch.object(builder, "ssh", return_value=mock.Mock(
+                    returncode=1, stderr="cleanup failed")), \
+                mock.patch.object(builder, "delete_instances") as cleanup, \
+                mock.patch.object(builder.glab, "cmd_image_create") as image_create, \
+                mock.patch.object(builder.glab, "write_config"), \
+                mock.patch.object(builder, "log"):
+            with self.assertRaisesRegex(SystemExit, "clean builder identity"):
+                builder.build("z")
+        image_create.assert_not_called()
+        cleanup.assert_called_once()
+
+
 class Metrics(unittest.TestCase):
     TEXT = (
         "# HELP vllm:prefix_cache_hits_total hits\n"
