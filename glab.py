@@ -88,6 +88,11 @@ EXTERNAL_IP_HOUR = 0.005
 
 BOOT_IMAGE = "projects/debian-cloud/global/images/family/debian-12"
 
+# A custom image, USD/GiB-month, from the Billing Catalog's "Storage Image in
+# Singapore" on 2026-09-25. `image-create` stores images in the working region
+# so this is the rate that applies.
+IMAGE_GB_MONTH = 0.055
+
 
 # ---------------------------------------------------------------- plumbing
 
@@ -213,6 +218,7 @@ def describe(zone=None):
             "private_ip": nic.network_i_p if nic else "-",
             "ip": getattr(access, "nat_i_p", None) or "-",
             "launched": i.creation_timestamp,
+            "started": i.last_start_timestamp,
             "buy": ("spot" if i.scheduling
                     and i.scheduling.provisioning_model == "SPOT" else "on-demand"),
             "gpus": sum(a.accelerator_count for a in (i.guest_accelerators or [])),
@@ -614,6 +620,16 @@ def cmd_quota(args):
           "spot is a third.")
 
 
+def image_path(value):
+    """`--image` accepts a full path, `family/NAME` for the newest image in one
+    of this project's families, or a bare image name in this project."""
+    if not value:
+        return BOOT_IMAGE
+    if value.startswith(("projects/", "https://")):
+        return value
+    return f"projects/{current_project()}/global/images/{value}"
+
+
 def cmd_init(args):
     name = args.name
     if any(i["name"] == name for i in describe()):
@@ -633,7 +649,7 @@ def cmd_init(args):
     disk = compute_v1.AttachedDisk(
         boot=True, auto_delete=True,
         initialize_params=compute_v1.AttachedDiskInitializeParams(
-            source_image=args.image or BOOT_IMAGE,
+            source_image=image_path(args.image),
             disk_size_gb=args.disk, disk_type=f"zones/{zone}/diskTypes/{args.disk_type}"),
     )
 
@@ -645,6 +661,13 @@ def cmd_init(args):
         scheduling.instance_termination_action = "STOP"
         scheduling.automatic_restart = False
         scheduling.on_host_maintenance = "TERMINATE"
+    max_run = getattr(args, "max_run", None)
+    if max_run:
+        # Compute Engine deletes the instance, boot disk included, this long
+        # after it starts, whether or not anything here is still running to
+        # do it. DELETE also replaces STOP for a spot preemption.
+        scheduling.max_run_duration = compute_v1.Duration(seconds=max_run * 60)
+        scheduling.instance_termination_action = "DELETE"
 
     instance = compute_v1.Instance(
         name=name,
@@ -676,9 +699,29 @@ def cmd_init(args):
     wait(op, zone)
     print(f"{name}: {args.type} starting in {zone}")
     price = (SPOT_PRICES if args.spot else PRICES).get(args.type)
+    if max_run:
+        print(f"deleted by Compute Engine {max_run} minutes after it starts")
     if price:
         print(f"cost if left running: ~${price:.4f}/hour plus disk")
     print(f"\nwait a minute, then: glab run {name} 'uname -a'")
+
+
+def uptime(started, state, now=None):
+    """How long an instance has been running since its last start, as 3d4h,
+    5h12m or 7m. Only a running instance has one; a stopped one bills for its
+    disk, not its hours, so it shows "-"."""
+    if state != "running" or not started:
+        return "-"
+    try:
+        t = datetime.fromisoformat(started)
+    except ValueError:
+        return "-"
+    minutes = max(0, int(((now or datetime.now(timezone.utc)) - t).total_seconds() // 60))
+    days, rest = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(rest, 60)
+    if days:
+        return f"{days}d{hours}h"
+    return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m"
 
 
 def cmd_list(args):
@@ -689,13 +732,14 @@ def cmd_list(args):
         for found in pool.map(describe, zones):
             for i in found:
                 rows.append([i["name"], i["type"], i["state"], i["zone"],
+                             uptime(i.get("started"), i["state"]),
                              i["private_ip"], i["ip"], i["buy"],
                              i["gpus"] or "-"])
     if not rows:
         where = "any zone" if args.all_zones else current_zone()
         print(f"no lab instances in {where}")
         return
-    table(sorted(rows), ["name", "type", "state", "zone", "private ip",
+    table(sorted(rows), ["name", "type", "state", "zone", "up", "private ip",
                          "public ip", "buy", "gpu"])
 
 
@@ -803,6 +847,72 @@ def cmd_destroy(args):
     print(f"deleted {len(ops)} instance(s). boot disks went with them.")
 
 
+def images_client():
+    return compute_v1.ImagesClient()
+
+
+def lab_images():
+    request = compute_v1.ListImagesRequest(
+        project=current_project(), filter=f"labels.{LABEL_KEY}=1")
+    return sorted(images_client().list(request=request),
+                  key=lambda i: i.creation_timestamp)
+
+
+def cmd_images(args):
+    rows = []
+    for i in lab_images():
+        archive_gb = (i.archive_size_bytes or 0) / 1024**3
+        rows.append([i.name, i.family or "-", i.status.lower(),
+                     i.disk_size_gb, f"{archive_gb:.1f}",
+                     f"${archive_gb * IMAGE_GB_MONTH:.2f}",
+                     i.creation_timestamp[:16]])
+    if not rows:
+        print("no lab images")
+        return
+    table(rows, ["name", "family", "status", "disk GB", "stored GB",
+                 "per month", "created"])
+    print(f"\nstorage priced at ${IMAGE_GB_MONTH}/GiB-month on the stored size. "
+          "`glab image-delete NAME` removes one.")
+
+
+def cmd_image_create(args):
+    """Make an image from a stopped instance's boot disk. The instance has to
+    be stopped so the disk is not changing while it is copied."""
+    i = find(args.source)
+    if i["state"] != "terminated":
+        die(f"{args.source} is {i['state']}; `glab stop {args.source}` first")
+    image = compute_v1.Image(
+        name=args.name,
+        family=args.family,
+        description=args.description,
+        source_disk=f"projects/{current_project()}/zones/{i['zone']}"
+                    f"/disks/{i['disks'][0]}",
+        storage_locations=[current_region(i["zone"])],
+        labels={LABEL_KEY: "1"},
+    )
+    print(f"creating image {args.name} from {args.source}'s disk "
+          "(a few minutes)")
+    wait(images_client().insert(project=current_project(),
+                                image_resource=image))
+    print(f"image {args.name} ready. use it with "
+          f"`glab init NAME --image {args.name}`"
+          + (f" or --image family/{args.family}" if args.family else ""))
+
+
+def cmd_image_delete(args):
+    try:
+        image = images_client().get(project=current_project(), image=args.name)
+    except NotFound:
+        die(f"no image named {args.name!r}")
+    if not has_lab_label(image):
+        die(f"{args.name} does not carry the {LABEL_KEY}=1 label; not touching it")
+    if not args.yes and input(f"delete image {args.name}? [y/N] ").strip().lower() != "y":
+        print("cancelled")
+        return
+    wait(images_client().delete(project=current_project(), image=args.name))
+    print(f"deleted image {args.name}")
+
+
 # ---------------------------------------------------------------- parsing
 
 def build_parser():
@@ -849,10 +959,14 @@ def build_parser():
                     choices=sorted(DISK_GB_MONTH))
     sp.add_argument("--gpu", metavar="MODEL[:N]",
                     help="attach GPUs, e.g. nvidia-tesla-t4:1")
-    sp.add_argument("--image", help="source image; default is Debian 12")
+    sp.add_argument("--image", help="source image: a full path, a name in this "
+                    "project, or family/NAME; default is Debian 12")
     sp.add_argument("--spot", action="store_true", help="use spot pricing")
     sp.add_argument("--public-ip", action="store_true",
                     help="give it an external address, so it can reach the internet")
+    sp.add_argument("--max-run", type=int, metavar="MINUTES",
+                    help="have Compute Engine delete it this many minutes after "
+                    "it starts")
     sp.set_defaults(fn=cmd_init)
 
     sp = sub.add_parser("list", help="list lab instances")
@@ -892,6 +1006,23 @@ def build_parser():
     sp.add_argument("--yes", action="store_true",
                     help="skip the confirmation, for scripts")
     sp.set_defaults(fn=cmd_destroy)
+
+    sub.add_parser("images", help="list lab images and their storage cost") \
+        .set_defaults(fn=cmd_images)
+
+    sp = sub.add_parser("image-create",
+                        help="make an image from a stopped instance's disk")
+    sp.add_argument("name")
+    sp.add_argument("--from", dest="source", required=True, metavar="INSTANCE")
+    sp.add_argument("--family", help="group images; family/NAME picks the newest")
+    sp.add_argument("--description", default="")
+    sp.set_defaults(fn=cmd_image_create)
+
+    sp = sub.add_parser("image-delete", help="delete a lab image")
+    sp.add_argument("name")
+    sp.add_argument("--yes", action="store_true",
+                    help="skip the confirmation, for scripts")
+    sp.set_defaults(fn=cmd_image_delete)
 
     return p
 

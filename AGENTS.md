@@ -27,8 +27,10 @@ API call does. Don't add abstraction that hides the calls.
 Confirmed against a real project on 2026-09-25: `whoami`, `project`, `zone`,
 `zones`, `types` (on-demand and spot), `quota`, and a full e2-micro cycle of
 `init`, `list`, `run`, `push`, `pull`, `stop`, `start`, `cost` and `destroy`.
-`init --spot` ran via `experiments/ping-latency`. Not yet run: `shell`,
-`init --public-ip`, `init --gpu`.
+`init --spot` ran via `experiments/ping-latency`. `experiments/llm-chat` ran
+`init` of a G2 (L4 built in) with `--image` and `--public-ip`, `images` and
+`image-create`, on 2026-09-25. Not yet run: `shell`, `image-delete`, and
+`init --gpu` (an accelerator attached to an N1).
 
 What the first runs showed, kept because each failed quietly or late:
 
@@ -42,6 +44,20 @@ What the first runs showed, kept because each failed quietly or late:
 - gcloud needs an SSH key at `~/.ssh/google_compute_engine` for OS Login, and
   on a machine with no terminal it cannot prompt for a passphrase. Create it
   once with `gcloud compute ssh NAME --tunnel-through-iap --quiet`.
+- An ssh session to an instance that is preempted hangs with no error; an
+  image build sat for 10 hours. `experiments/llm-chat/common.py` passes
+  ServerAliveInterval so it fails within about a minute.
+- L4 capacity in asia-southeast1 ran out in each zone at some point on
+  2026-09-25, on-demand and spot. The insert fails with "does not have enough
+  resources available" (STOCKOUT); another zone often had one.
+- Spot was preempted twice on 2026-09-25: a G2 image builder 7 minutes in,
+  and later a G2 server during a session, with its e2-small client minutes
+  after it.
+- A zone listing right after a preemption once hung for the client's default
+  600 s read timeout. `InstancesClient.get` with `timeout=` bounds it.
+- vLLM 0.30.0 on the Ubuntu accelerator image needs `build-essential` and
+  `python3-dev` (Triton compiles at start), and FlashInfer's sampler needs
+  nvcc, which the image lacks; `VLLM_USE_FLASHINFER_SAMPLER=0` avoids it.
 - `init` and `cost` read only the `PRICES` and `SPOT_PRICES` fallback tables,
   not the catalog. The tables matched the catalog on 2026-09-25.
 
@@ -82,6 +98,11 @@ Update this section as things are confirmed rather than leaving it whole.
 - Spot uses `provisioning_model=SPOT` with `instance_termination_action=STOP`,
   so `glab start` brings one back. This is the analogue of the persistent EC2
   spot request, without the separate request object that outlives the instance.
+- `init --max-run MINUTES` sets `max_run_duration` with termination action
+  DELETE: Compute Engine deletes the instance and its boot disk at the limit,
+  with nothing on this side running. Confirmed 2026-09-26 on an e2-micro:
+  deletion began 2 minutes after start. DELETE also replaces STOP for a spot
+  preemption. Experiments use it so a lost laptop cannot leave a GPU billing.
 - A GPU cannot live-migrate, so `on_host_maintenance` must be `TERMINATE` or
   the insert is rejected.
 

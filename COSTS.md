@@ -91,11 +91,16 @@ not with how long you run. Two zones inside one region is $0.01/GB instead of
 $0.08/GiB, eight times cheaper, at the cost of measuring a sub-millisecond hop
 instead of a ~30ms one.
 
+What the experiments in this repo actually took and cost per run is in
+`experiments/README.md`.
+
 ## Rules of thumb
 
 - Spot is 40% off on G2 and 73% off on N1. It is the default worth using; both
   Spot and the old Preemptible are the same product now, and Spot has no
-  24-hour cap.
+  24-hour cap. Spot does not bound the bill, though: an instance runs until
+  Google needs the capacity. `glab init --max-run MINUTES` does bound it;
+  Compute Engine deletes the instance at the limit.
 - Sustained use discounts apply automatically to on-demand N1 and N2 if an
   instance runs most of a month. They do not apply to spot, and you will not
   hit them doing short experiments.

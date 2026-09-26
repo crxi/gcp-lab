@@ -17,12 +17,14 @@ glab destroy box
 
 ## Status
 
-The tool is written but has not been run against a project. There is no
-`gcloud` on the machine it was written on, so every API call in `glab.py` is
-unexercised. Expect field-name and shape errors on first contact, particularly
-in `machine_price`, where the Billing Catalog's SKU descriptions are matched
-with a regex. `COSTS.md` is sourced from public price pages, not from a
-billing account.
+Run against a real project since 2026-09-25. `AGENTS.md` lists which commands
+have been confirmed and what the first runs turned up. `COSTS.md` is sourced
+from the Cloud Billing Catalog.
+
+## Experiments
+
+`experiments/README.md` covers both experiments so far, `ping-latency` and
+`llm-chat`: how to run each, what a run costs, and the results of one run.
 
 ## Layout
 
@@ -45,13 +47,15 @@ glab zones                 zones, and which GPUs each one sells
 glab types                 machine types and prices in the zone
 glab quota                 CPU and GPU limits, which gate launches
 glab init NAME             create an instance
-glab list                  list lab instances
+glab list                  list lab instances, and how long each has been up
 glab start / stop NAME     stop billing for compute, keep the disk
 glab shell NAME            interactive shell over IAP
 glab run NAME CMD          one command
 glab push / pull           copy files
 glab cost                  rough cost of what is running
 glab destroy NAME          delete it, and its boot disk
+glab images                lab images and their monthly storage cost
+glab image-create / image-delete   make an image from a stopped instance's disk, or delete one
 ```
 
 ## How it differs from the EC2 version

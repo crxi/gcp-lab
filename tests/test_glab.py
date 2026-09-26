@@ -7,6 +7,7 @@ own logic rather than the client library's.
     python -m unittest discover -s tests
 """
 
+import io
 import json
 import os
 import sys
@@ -440,6 +441,17 @@ class PingExperiment(unittest.TestCase):
         self.assertEqual(ping.percentile([5.0], 90), 5.0)
         self.assertIsNone(ping.percentile([], 50))
 
+    def test_leftovers_list_every_zone(self):
+        with mock.patch.object(glab, "cmd_list") as listing, \
+                mock.patch("sys.stdout"):
+            ping.show_leftovers()
+        self.assertTrue(listing.call_args.args[0].all_zones)
+
+    def test_leftovers_failure_does_not_raise(self):
+        with mock.patch.object(glab, "cmd_list", side_effect=SystemExit(1)), \
+                mock.patch("sys.stdout"):
+            ping.show_leftovers()
+
     def test_keep_destroys_nothing(self):
         with mock.patch.object(glab, "instances_client") as client, \
                 mock.patch.object(ping, "drop_icmp_rule") as drop:
@@ -464,6 +476,57 @@ class Wait(unittest.TestCase):
             result = glab.wait(mock.Mock(name="op"), zone="asia-southeast1-b")
         self.assertIs(result, done)
         self.assertEqual(client.wait.call_count, 3)
+
+
+class MaxRun(unittest.TestCase):
+    def insert(self, **extra):
+        args = glab.argparse.Namespace(
+            name="box", type="e2-micro", disk=10, disk_type="pd-balanced",
+            gpu=None, image=None, spot=True, public_ip=False, **extra)
+        client = mock.MagicMock()
+        # compute_v1 is a stub here, so give Scheduling and Duration plain
+        # objects to hold what cmd_init sets.
+        scheduling = types.SimpleNamespace()
+        with mock.patch.object(glab.compute_v1, "Scheduling",
+                               return_value=scheduling), \
+                mock.patch.object(glab.compute_v1, "Duration",
+                                  side_effect=lambda seconds: types.SimpleNamespace(
+                                      seconds=seconds)), \
+                mock.patch.object(glab, "describe", return_value=[]), \
+                mock.patch.object(glab, "current_zone", return_value="z"), \
+                mock.patch.object(glab, "current_project", return_value="p"), \
+                mock.patch.object(glab, "ensure_firewall"), \
+                mock.patch.object(glab, "wait"), \
+                mock.patch.object(glab, "instances_client", return_value=client), \
+                mock.patch("sys.stdout", new_callable=io.StringIO):
+            glab.cmd_init(args)
+        return scheduling
+
+    def test_limit_deletes_rather_than_stops(self):
+        s = self.insert(max_run=45)
+        self.assertEqual(s.max_run_duration.seconds, 45 * 60)
+        self.assertEqual(s.instance_termination_action, "DELETE")
+
+    def test_spot_without_a_limit_stops(self):
+        self.assertEqual(self.insert().instance_termination_action, "STOP")
+
+
+class Uptime(unittest.TestCase):
+    # The API's timestamps carry the zone's offset, not UTC.
+    now = glab.datetime(2026, 9, 26, 0, 40, tzinfo=glab.timezone.utc)
+
+    def test_minutes_hours_days(self):
+        self.assertEqual(glab.uptime("2026-09-25T17:33:05.123-07:00", "running",
+                                     self.now), "6m")
+        self.assertEqual(glab.uptime("2026-09-25T15:10:00.000-07:00", "running",
+                                     self.now), "2h30m")
+        self.assertEqual(glab.uptime("2026-09-23T00:00:00.000+00:00", "running",
+                                     self.now), "3d0h")
+
+    def test_only_a_running_instance_has_one(self):
+        self.assertEqual(glab.uptime("2026-09-25T17:33:05.123-07:00",
+                                     "terminated", self.now), "-")
+        self.assertEqual(glab.uptime("", "running", self.now), "-")
 
 
 if __name__ == "__main__":
