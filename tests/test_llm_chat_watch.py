@@ -99,25 +99,25 @@ class Watch(unittest.TestCase):
     def test_locate_finds_the_vm_in_a_fallback_zone(self):
         api = mock.Mock()
         api.get.side_effect = lambda **kw: (
-            SimpleNamespace(status="RUNNING") if kw["zone"] == "asia-southeast1-c"
+            SimpleNamespace(status="RUNNING", labels={"lab": "1", "lab-run": "run"}) if kw["zone"] == "asia-southeast1-c"
             else (_ for _ in ()).throw(watch.NotFound("no")))
         with mock.patch.object(watch.glab, "instances_client", return_value=api), \
                 mock.patch.object(watch.glab, "current_project", return_value="p"), \
                 mock.patch.object(watch.glab, "current_zone",
                                   return_value="asia-southeast1-a"):
-            self.assertEqual(watch.locate("llm-client"), "asia-southeast1-c")
+            self.assertEqual(watch.locate("llm-client"), ("asia-southeast1-c", "run"))
         self.assertEqual(api.get.call_args_list[0].kwargs["zone"], "asia-southeast1-a")
 
     def test_locate_waits_for_a_vm_that_is_starting(self):
         states = iter(["STAGING", "RUNNING"])
         api = mock.Mock()
-        api.get.side_effect = lambda **kw: SimpleNamespace(status=next(states))
+        api.get.side_effect = lambda **kw: SimpleNamespace(status=next(states), labels={"lab": "1", "lab-run": "run"})
         with mock.patch.object(watch.glab, "instances_client", return_value=api), \
                 mock.patch.object(watch.glab, "current_project", return_value="p"), \
                 mock.patch.object(watch.glab, "current_zone", return_value="z"), \
                 mock.patch.object(watch.time, "sleep"), \
                 mock.patch.object(watch, "log") as log:
-            self.assertEqual(watch.locate("llm-server"), "z")
+            self.assertEqual(watch.locate("llm-server"), ("z", "run"))
         self.assertIn("staging in z", log.call_args.args[0])
 
     def test_remote_sends_the_program_on_stdin(self):
@@ -157,7 +157,7 @@ class Watch(unittest.TestCase):
             api.get.side_effect = watch.NotFound("gone")
         else:
             api.get.return_value = SimpleNamespace(status=vm_status)
-        with mock.patch.object(watch, "locate", return_value="z"), \
+        with mock.patch.object(watch, "locate", return_value=("z", "run")), \
                 mock.patch.object(watch, "wait_ssh"), \
                 mock.patch.object(watch, "remote", return_value=proc), \
                 mock.patch.object(watch.glab, "instances_client", return_value=api), \
@@ -177,3 +177,38 @@ class Watch(unittest.TestCase):
         said, err = self.run_one("RUNNING")
         self.assertIn("still running", said)
         self.assertIn("gcloud: 255", err)
+
+
+class WatchRegressions(unittest.TestCase):
+    def test_relay_flushes_final_block_without_blank_line(self):
+        proc = SimpleNamespace(stdout=iter(["conversation is over\n"]),
+                               stderr=None, wait=lambda: 0)
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            watch.relay(proc, "", True)
+        self.assertEqual(out.getvalue(), "conversation is over\n")
+
+    def test_locate_rejects_unowned_and_different_runs(self):
+        for labels in ({}, {"lab": "1"}, {"lab-run": "wanted"},
+                       {"lab": "1", "lab-run": "other"}):
+            with self.subTest(labels=labels):
+                api = mock.Mock()
+                api.get.return_value = SimpleNamespace(status="RUNNING", labels=labels)
+                with mock.patch.object(watch.glab, "instances_client", return_value=api), \
+                        mock.patch.object(watch.glab, "current_project", return_value="p"), \
+                        mock.patch.object(watch.glab, "current_zone", return_value="z"), \
+                        mock.patch.object(watch, "log"):
+                    with self.assertRaises(SystemExit):
+                        watch.locate("llm-client", wait_s=-1, run_id="wanted")
+
+    def test_both_targets_use_the_same_run(self):
+        proc = SimpleNamespace(stdout=iter([]), stderr=None,
+                               wait=lambda: 0, returncode=0)
+        with mock.patch.object(watch, "locate", return_value=("z", "run")) as locate, \
+                mock.patch.object(watch, "wait_ssh"), \
+                mock.patch.object(watch, "remote", return_value=proc), \
+                mock.patch.object(watch, "log"):
+            watch.watch([("server", "s.py", [], "", False),
+                         ("client", "c.py", [], "", True)])
+        self.assertEqual(locate.call_args_list,
+                         [mock.call("server", run_id=None),
+                          mock.call("client", run_id="run")])

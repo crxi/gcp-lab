@@ -33,8 +33,8 @@ BOTH_SERVER_EVERY_S = 5
 lock = threading.Lock()
 
 
-def locate(name, wait_s=CREATE_WAIT_S, poll=10):
-    """The zone `name` is running in, once it is. run.py falls back to
+def locate(name, wait_s=CREATE_WAIT_S, poll=10, run_id=None):
+    """The zone and run label of an owned running instance. run.py falls back to
     another zone when one has no L4, so each zone is asked, starting with
     `glab zone`."""
     client = glab.instances_client()
@@ -51,8 +51,14 @@ def locate(name, wait_s=CREATE_WAIT_S, poll=10):
                                timeout=30)
             except NotFound:
                 continue
+            labels = i.labels or {}
+            candidate_run = labels.get("lab-run")
+            if (not glab.has_lab_label(i) or not candidate_run
+                    or (run_id is not None and candidate_run != run_id)):
+                status = f"ignoring {zone}: not owned by the selected experiment run"
+                continue
             if i.status == "RUNNING":
-                return zone
+                return zone, candidate_run
             status = f"{i.status.lower()} in {zone}"
             break
         if status != said:
@@ -101,6 +107,10 @@ def relay(proc, prefix, blocks):
             if blocks:
                 print(flush=True)
         pending = []
+    if pending:
+        with lock:
+            for held in pending:
+                print(f"{prefix}{held}", flush=True)
     proc.errors = proc.stderr.read() if proc.stderr else ""
     proc.wait()
 
@@ -118,8 +128,9 @@ def running(name, zone):
 def watch(targets):
     """targets: [(vm name, program, program args, prefix, blocks)]."""
     zones = {}
+    run_id = None
     for name, *_ in targets:
-        zones[name] = locate(name)
+        zones[name], run_id = locate(name, run_id=run_id)
         log(f"{name} is running in {zones[name]}; waiting for ssh")
         wait_ssh(name, zones[name])
     procs = [(name, remote(name, zones[name], program, args), prefix, blocks)
