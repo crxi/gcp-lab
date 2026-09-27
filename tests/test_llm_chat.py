@@ -313,3 +313,40 @@ class Preemption(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MetricsFailure(unittest.TestCase):
+    def test_metrics_http_error_is_not_an_empty_success(self):
+        with mock.patch.object(client, "get", return_value=(503, "unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "503"):
+                client.scrape("host")
+
+    def test_failed_scrapes_preserve_answers_and_continue(self):
+        import tempfile
+        for samples in ([OSError("before failed"), {}, {}, {}],
+                        [{}, OSError("after failed"), {}, {}]):
+            with self.subTest(samples=samples), tempfile.TemporaryDirectory() as d:
+                questions = os.path.join(d, "questions.json")
+                output = os.path.join(d, "turns.jsonl")
+                with open(questions, "w") as f:
+                    json.dump({"system": "test", "questions": ["one", "two"]}, f)
+                argv = ["client.py", "--server", "host", "--questions", questions,
+                        "--out", output, "--model", "model", "--max-tokens", "2",
+                        "--temperature", "0", "--seed", "0"]
+                timing = dict(prompt_tokens=1, completion_tokens=2, ttft_ms=1,
+                              total_ms=2, decode_tok_s=100)
+                with mock.patch.object(sys, "argv", argv), \
+                        mock.patch.object(client, "wait_ready", return_value=0), \
+                        mock.patch.object(client, "connect_times", return_value=[1]), \
+                        mock.patch.object(client, "scrape", side_effect=samples), \
+                        mock.patch.object(client, "ask", side_effect=lambda *a: ("answer", dict(timing))), \
+                        mock.patch("sys.stdout", new_callable=io.StringIO):
+                    client.main()
+                with open(output) as f:
+                    turns = [r for r in map(json.loads, f) if r["kind"] == "turn"]
+                self.assertEqual(len(turns), 2)
+                self.assertEqual(turns[0]["answer"], "answer")
+                self.assertEqual(turns[0]["server"], {})
+                self.assertIsNone(turns[0]["prefix_hit_rate"])
+                self.assertEqual(len(turns[0]["metrics_errors"]), 1)
+                self.assertEqual(turns[1]["metrics_errors"], [])

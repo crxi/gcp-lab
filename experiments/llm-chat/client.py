@@ -78,6 +78,8 @@ def scrape(host):
     buckets. Names differ between vLLM versions, so everything is kept and the
     summary looks names up by suffix."""
     status, text = get(host, "/metrics")
+    if status != 200:
+        raise RuntimeError(f"metrics HTTP {status}: {text[:500]}")
     out = {}
     for line in text.splitlines():
         m = METRIC.match(line)
@@ -85,6 +87,16 @@ def scrape(host):
             continue
         out[m.group(1)] = out.get(m.group(1), 0.0) + float(m.group(3))
     return out
+
+
+def read_metrics(host, errors):
+    """Keep telemetry failures separate from completion failures."""
+    try:
+        return scrape(host)
+    except (OSError, http.client.HTTPException, ValueError, RuntimeError) as e:
+        errors.append(str(e))
+        say(f"WARNING metrics unavailable: {e}")
+        return {}
 
 
 def delta(before, after):
@@ -183,7 +195,8 @@ def main():
     args = p.parse_args()
 
     PORT = args.port
-    script = json.load(open(args.questions))
+    with open(args.questions) as f:
+        script = json.load(f)
     host = args.server
 
     say(f"READY-WAIT waiting for vLLM on {host}:{PORT}")
@@ -203,7 +216,8 @@ def main():
         record(out, {"kind": "network", "tcp_connect_ms": tcp})
         for n, question in enumerate(questions, 1):
             messages.append({"role": "user", "content": question})
-            before = scrape(host)
+            metrics_errors = []
+            before = read_metrics(host, metrics_errors)
             wall = time.time()
             try:
                 answer, t = ask(host, args.model, messages, args.max_tokens,
@@ -212,7 +226,7 @@ def main():
                 say(f"ERROR turn {n}: {e}")
                 record(out, {"kind": "error", "turn": n, "error": str(e)})
                 sys.exit(3)
-            server = delta(before, scrape(host))
+            server = delta(before, read_metrics(host, metrics_errors))
             hits = pick(server, "prefix_cache_hits_total")
             queries = pick(server, "prefix_cache_queries_total")
             t["prefix_hit_rate"] = (round(hits / queries, 4)
@@ -220,7 +234,7 @@ def main():
             messages.append({"role": "assistant", "content": answer})
             record(out, {"kind": "turn", "turn": n, "wall": wall,
                          "question": question, "answer": answer,
-                         **t, "server": server})
+                         **t, "server": server, "metrics_errors": metrics_errors})
             hit = (f"{t['prefix_hit_rate'] * 100:3.0f}%"
                    if t["prefix_hit_rate"] is not None else "  -")
             prompt = str(t['prompt_tokens']) if t['prompt_tokens'] is not None else '-'
