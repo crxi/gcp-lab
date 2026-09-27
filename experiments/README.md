@@ -44,9 +44,10 @@ The first run also prepares a reusable VM image containing the model and
 software. Allow roughly 20–30 minutes for a first run; startup and resource
 availability vary. Later runs reuse the image.
 
-The terminal prints each question's timing as it completes. You can also
-[watch the answers, server logs, and GPU](llm-chat/README.md#watch-llm-chat-in-progress)
-from another terminal. This is an automated conversation, so you do not need
+The terminal prints each question's timing as it completes. To read the
+answers and watch the GPU, run `python3 experiments/llm-chat/watch.py` in a
+second terminal; the [llm-chat guide](llm-chat/README.md#watch-llm-chat-in-progress)
+explains its output. This is an automated conversation, so you do not need
 to type questions while it runs.
 
 ## Results from one run

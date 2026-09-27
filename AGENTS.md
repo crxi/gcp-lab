@@ -31,6 +31,9 @@ Confirmed against a real project on 2026-09-25: `whoami`, `project`, `zone`,
 `init` of a G2 (L4 built in) with `--image` and `--public-ip`, `images` and
 `image-create`, on 2026-09-25. Not yet run: `shell`, `image-delete`, and
 `init --gpu` (an accelerator attached to an N1).
+`experiments/llm-chat/watch.py` ran against a full llm-chat run on 2026-09-27
+(both, chat and server modes); its quiet exit when run.py deletes the VMs is
+tested with mocks only.
 
 What the first runs showed, kept because each failed quietly or late:
 
@@ -55,6 +58,10 @@ What the first runs showed, kept because each failed quietly or late:
   after it.
 - A zone listing right after a preemption once hung for the client's default
   600 s read timeout. `InstancesClient.get` with `timeout=` bounds it.
+- watch.py's viewer started before run.py had copied questions.json, so it
+  read the question count lazily. gcloud prints a NumPy tunnel warning unless
+  given `--verbosity=error`, and on a deleted VM a troubleshooting hint that
+  names the project.
 - vLLM 0.30.0 on the Ubuntu accelerator image needs `build-essential` and
   `python3-dev` (Triton compiles at start), and FlashInfer's sampler needs
   nvcc, which the image lacks; `VLLM_USE_FLASHINFER_SAMPLER=0` avoids it.

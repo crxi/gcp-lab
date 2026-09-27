@@ -70,76 +70,46 @@ progress messages or `glab list --all-zones`.
 
 ## Watch llm-chat in progress
 
-The launch terminal shows timing summaries. To read generated answers or
-inspect the server, open a second terminal on your computer. Return to this
-repository and activate its environment:
+The launch terminal shows one timing line per answer. To read the answers
+and see what the server is doing, open a second terminal on your computer,
+go to this repository, and run:
 
 ```bash
 source .venv/bin/activate
 export PATH="$HOME/.local/bin:$PATH"
-glab list --all-zones
+python3 experiments/llm-chat/watch.py
 ```
 
-Wait until `llm-server` and `llm-client` are running. If only `llm-build`
-appears, the image is still being prepared. SSH may take another 30 seconds
-to become ready after a VM shows `running`.
+`watch.py` can be started at any point after `run.py`. It waits for the
+VMs to be created and to accept SSH, then shows two things together:
 
-Check that `glab zone` matches the chat VMs' zone. The runner normally sets
-it for you. While a run is active, avoid switching it to an unrelated zone
-or project: the scripts share this local configuration.
+- each question and the model's answer, with its timing, from the client
+- a status line every 5 seconds from the server: GPU use, memory, power
+  and temperature, requests in progress, tokens generated per second, and
+  the prefix-cache hit rate so far
 
-### Read the questions and answers
+Answers appear when each one is complete, not word by word. If you start
+`watch.py` partway through, it first prints the answers so far.
 
-On your computer, connect to the client:
+To watch one side on its own, in a larger terminal each:
 
 ```bash
-glab shell llm-client
+python3 experiments/llm-chat/watch.py chat     # questions and answers only
+python3 experiments/llm-chat/watch.py server   # status every 2 s, plus vLLM's log
 ```
 
-You are now inside that VM. Run this command there to display each completed
-question and answer as it is saved:
+`server` mode shows vLLM loading the model, which takes about two minutes
+before the first question, and its throughput lines during the conversation.
 
-```bash
-tail -n +1 -F turns.jsonl | python3 -u -c '
-import json, sys
-for line in sys.stdin:
-    row = json.loads(line)
-    if row.get("kind") == "turn":
-        print("\nTurn {turn}\nYou: {question}\nModel: {answer}".format(**row))
-    elif row.get("kind") == "error":
-        print(row.get("error"))
-'
-```
+`watch.py` copies nothing to the VMs and does not affect the run, apart from
+one GPU query and one metrics request on the server per status line. Press
+Ctrl-C to stop watching; the experiment continues. `watch.py` ends by itself
+after the last answer, or when `run.py` deletes the VMs.
 
-The file appears after the client has connected to the ready model; `tail -F`
-waits if it does not exist yet. Answers appear after each turn completes,
-not token by token. Press Ctrl-C to stop watching, then type `exit` to return
-to your own computer. This does not stop the experiment.
-
-### Watch server startup or GPU use
-
-From your computer, connect to the server:
-
-```bash
-glab shell llm-server
-```
-
-Inside that VM, follow the model server's log:
-
-```bash
-sudo journalctl -u vllm -f --no-pager
-```
-
-Press Ctrl-C to stop following the log. To refresh the GPU status every second,
-run this inside the same VM:
-
-```bash
-watch -n 1 nvidia-smi
-```
-
-Press Ctrl-C and then type `exit` when finished. Watching does not keep the
-VMs alive: the runner normally deletes them after collecting the results,
-so these remote connections will close during cleanup.
+To look around a VM yourself, `glab shell llm-client` or
+`glab shell llm-server` opens a shell on it. The client's answers are in
+`turns.jsonl` in the home directory; vLLM's log is `sudo journalctl -u vllm`
+on the server.
 
 ## Read the results
 

@@ -29,16 +29,15 @@ from datetime import datetime, timezone
 
 import common
 from client import percentile
-from common import (CLIENT_DISK_GB, CLIENT_TYPE, FAMILY, GPU_DISK_GB,
+from common import (CLIENT, CLIENT_DISK_GB, CLIENT_TYPE, FAMILY, GPU_DISK_GB,
                     GPU_SAMPLE_S, GPU_TYPE, HERE, MAX_MODEL_LEN, MAX_RUN_MIN,
                     MAX_TOKENS,
-                    PORT, RESULTS, SEED, SPOT, TEMPERATURE, VLLM_ENV, compute_v1,
+                    PORT, RESULTS, SEED, SERVER, SPOT, TEMPERATURE, VLLM_ENV, compute_v1,
                     create, create_gpu,
                     delete_instances, glab, log, newest_image, scp_from,
                     scp_to, show_leftovers, ssh, state, stream, wait_running,
                     wait_ssh, NotFound)
 
-SERVER, CLIENT = "llm-server", "llm-client"
 PORT_RULE = "lab-llm-chat-port"
 GPU_FIELDS = ["timestamp", "utilization.gpu", "utilization.memory",
               "memory.used", "power.draw", "temperature.gpu", "clocks.sm"]
@@ -297,6 +296,8 @@ def main():
     log(f"image {image.name}; Ctrl-C at any point still deletes the instances, "
         f"and Compute Engine deletes them {MAX_RUN_MIN} min after they start "
         f"if nothing else does")
+    log("to watch the answers and the server, run in another terminal: "
+        "python3 experiments/llm-chat/watch.py")
 
     started = time.time()
     run_id = uuid.uuid4().hex

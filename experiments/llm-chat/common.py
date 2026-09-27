@@ -56,6 +56,9 @@ BUILD_PUBLIC_IP = True
 # landed.
 ZONES = ["asia-southeast1-a", "asia-southeast1-b", "asia-southeast1-c"]
 
+# VM names. watch.py finds the VMs by these.
+SERVER, CLIENT = "llm-server", "llm-client"
+
 # Client. Only sends HTTP and times it, so the smallest type that is not
 # shared-core-starved; e2-micro's 0.25 vCPU could add jitter to the timings.
 CLIENT_TYPE = "e2-small"
