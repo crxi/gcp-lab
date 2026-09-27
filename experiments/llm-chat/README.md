@@ -205,8 +205,14 @@ glab destroy llm-server
 glab destroy llm-client
 ```
 
-Delete `llm-build` the same way if a failed build left it behind. To remove a
-leftover firewall rule, use the exact rule name printed by your run:
+If image creation times out, loses its connection, or is interrupted, the
+script retains the stopped `llm-build` and its source disk. The image copy
+may still be running. Check the named image with `glab images` and, if its
+state is unclear, inspect the image operation in Compute Engine before
+deleting the builder. Once the operation has finished, delete `llm-build`
+the same way. Retained disk storage still bills.
+
+To remove a leftover firewall rule, use the exact rule name printed by your run:
 
 ```bash
 gcloud compute firewall-rules delete RULE_NAME_FROM_RUN --project YOUR_PROJECT_ID

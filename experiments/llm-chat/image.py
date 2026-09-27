@@ -6,8 +6,8 @@
 
 Creates `llm-build` (g2-standard-4, on-demand, with a temporary external IP so it
 can reach PyPI and Hugging Face), runs provision.sh on it, stops it, makes an
-image of its disk, and deletes it. The builder is deleted in a `finally`, and
-with it the external IP. run.py calls this when no image exists.
+image of its disk, and deletes it. Cleanup deletes the builder and its external IP unless image creation
+ends without confirmed success; then the stopped builder is retained for inspection. run.py calls this when no image exists.
 
 Settings and the reasons for them are in common.py. The build that made the
 current image took 10 minutes, about $0.15. The image then costs about
@@ -83,11 +83,20 @@ def build(zone, spot=BUILD_SPOT, disk=GPU_DISK_GB, vllm_version=VLLM_VERSION,
         log(f"stopping {BUILDER}")
         glab.cmd_stop(argparse.Namespace(name=BUILDER))
         description = json.dumps(versions or {"model": MODEL})[:2048]
+        # A failed wait does not mean the server-side copy has stopped.
+        keep_builder = True
         glab.cmd_image_create(argparse.Namespace(
             name=name, source=BUILDER, family=FAMILY,
             description=description))
+        keep_builder = False
     except BaseException:
-        if keep and created:
+        if keep_builder:
+            log(f"image creation did not return success; retaining stopped "
+                f"{BUILDER} in {zone} and its source disk. Check image {name} "
+                f"with `glab images`. After the image operation finishes, "
+                f"set `glab zone {zone}` and run `glab destroy {BUILDER}`. "
+                "Retained disk storage still bills.")
+        elif keep and created:
             log(f"left {BUILDER} running for inspection: glab shell {BUILDER}; "
                 f"glab destroy {BUILDER} when done")
             keep_builder = True
