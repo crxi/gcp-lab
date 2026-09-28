@@ -311,9 +311,6 @@ class Preemption(unittest.TestCase):
         self.assertTrue(result["complete"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class MetricsFailure(unittest.TestCase):
     def test_metrics_http_error_is_not_an_empty_success(self):
@@ -350,3 +347,7 @@ class MetricsFailure(unittest.TestCase):
                 self.assertIsNone(turns[0]["prefix_hit_rate"])
                 self.assertEqual(len(turns[0]["metrics_errors"]), 1)
                 self.assertEqual(turns[1]["metrics_errors"], [])
+
+
+if __name__ == "__main__":
+    unittest.main()

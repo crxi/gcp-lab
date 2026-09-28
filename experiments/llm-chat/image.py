@@ -6,8 +6,9 @@
 
 Creates `llm-build` (g2-standard-4, on-demand, with a temporary external IP so it
 can reach PyPI and Hugging Face), runs provision.sh on it, stops it, makes an
-image of its disk, and deletes it. Cleanup deletes the builder and its external IP unless image creation
-ends without confirmed success; then the stopped builder is retained for inspection. run.py calls this when no image exists.
+image of its disk, and deletes it, and with it the external IP. If image
+creation does not report success, the stopped builder is kept, since the
+copy may still be reading its disk. run.py calls this when no image exists.
 
 Settings and the reasons for them are in common.py. The build that made the
 current image took 10 minutes, about $0.15. The image then costs about
